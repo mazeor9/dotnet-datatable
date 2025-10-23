@@ -1,6 +1,6 @@
 {
   "name": "tbl-js",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "A JavaScript DataTable library with type validation, filtering, sorting and SQL database integration. Inspired by .NET's DataTable.",
   "main": "src/index.js",
   "scripts": {
