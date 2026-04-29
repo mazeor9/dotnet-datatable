@@ -1,26 +1,26 @@
-# tbl-js
+# dotnet-datatable
 
 A lightweight and flexible package for managing tabular data with features similar to .NET's DataTable. This package provides an efficient way to handle structured data with support for typed columns, data validation, sorting, and filtering. It can be used with any SQL database like PostgreSQL, MySQL, SQLite, or SQL Server.
 
 <div align="center">
   <p>
-    <a href="https://www.npmjs.com/package/tbl-js">
-      <img src="https://img.shields.io/npm/v/tbl-js.svg?logo=npm&style=for-the-badge&color=CB3837" alt="NPM Version" />
+    <a href="https://www.npmjs.com/package/dotnet-datatable">
+      <img src="https://img.shields.io/npm/v/dotnet-datatable.svg?logo=npm&style=for-the-badge&color=CB3837" alt="NPM Version" />
     </a>
-    <a href="https://www.npmjs.com/package/tbl-js">
-      <img src="https://img.shields.io/npm/dt/tbl-js.svg?style=for-the-badge&color=CB3837" alt="NPM Downloads" />
+    <a href="https://www.npmjs.com/package/dotnet-datatable">
+      <img src="https://img.shields.io/npm/dt/dotnet-datatable.svg?style=for-the-badge&color=CB3837" alt="NPM Downloads" />
     </a>
-    <a href="https://github.com/mazeor9/tbl-js/releases/latest">
-      <img src="https://img.shields.io/github/v/release/mazeor9/tbl-js?style=for-the-badge&color=green" alt="GitHub Release" />
+    <a href="https://github.com/mazeor9/dotnet-datatable/releases/latest">
+      <img src="https://img.shields.io/github/v/release/mazeor9/dotnet-datatable?style=for-the-badge&color=green" alt="GitHub Release" />
     </a>
-    <a href="https://github.com/mazeor9/tbl-js/blob/main/LICENSE">
-      <img src="https://img.shields.io/github/license/mazeor9/tbl-js?style=for-the-badge&color=blue" alt="License" />
+    <a href="https://github.com/mazeor9/dotnet-datatable/blob/main/LICENSE">
+      <img src="https://img.shields.io/github/license/mazeor9/dotnet-datatable?style=for-the-badge&color=blue" alt="License" />
     </a>
-    <a href="https://github.com/mazeor9/tbl-js">
-      <img src="https://img.shields.io/github/stars/mazeor9/tbl-js?style=for-the-badge&color=yellow" alt="GitHub Stars" />
+    <a href="https://github.com/mazeor9/dotnet-datatable">
+      <img src="https://img.shields.io/github/stars/mazeor9/dotnet-datatable?style=for-the-badge&color=yellow" alt="GitHub Stars" />
     </a>
-    <a href="https://bundlephobia.com/package/tbl-js">
-      <img src="https://img.shields.io/bundlephobia/minzip/tbl-js?style=for-the-badge&color=orange" alt="Bundle Size" />
+    <a href="https://bundlephobia.com/package/dotnet-datatable">
+      <img src="https://img.shields.io/bundlephobia/minzip/dotnet-datatable?style=for-the-badge&color=orange" alt="Bundle Size" />
     </a>
   </p>
 </div>
@@ -34,9 +34,10 @@ A lightweight and flexible package for managing tabular data with features simil
 - Query result loading
 - Database integration
 
-## 📋 Table of Contents
+## Table of Contents
 
 - [Installation](#installation)
+- [CSS Themes](#css-themes)
 - [Basic Usage](#basic-usage)
 - [Database Integration](#database-integration)
 - [Features](#features)
@@ -59,17 +60,52 @@ A lightweight and flexible package for managing tabular data with features simil
 ## Installation
 
 ```bash
-npm install tbl-js
+npm install dotnet-datatable
+```
+
+## CSS Themes
+
+The package includes optional CSS presets aligned with typical ASP.NET-era and modern .NET UI styling approaches (2014+). These styles target HTML tables when you add the `dotnet-datatable` class (or `aspnet-gridview` / `aspnet-datagrid` / `aspnet-webdatagrid`).
+
+Import one theme:
+
+```javascript
+import 'dotnet-datatable/css/aspnetcore-bootstrap5.css';
+```
+
+Available themes:
+
+- `dotnet-datatable/css/webforms-2014.css` (ASP.NET WebForms 2014+)
+- `dotnet-datatable/css/webdatagrid-2014.css` (WebDataGrid 2014+)
+- `dotnet-datatable/css/mvc-bootstrap3.css` (ASP.NET MVC, Bootstrap 3-era)
+- `dotnet-datatable/css/aspnetcore-bootstrap5.css` (ASP.NET Core, Bootstrap 5-era)
+- `dotnet-datatable/css/blazor-fluentui.css` (Blazor, Fluent-like)
+
+Minimal markup example:
+
+```html
+<table class="dotnet-datatable">
+  <thead>
+    <tr>
+      <th class="ddt-sort-asc">Name</th>
+      <th>Age</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Alice</td><td>35</td></tr>
+    <tr class="ddt-row-selected"><td>John</td><td>25</td></tr>
+  </tbody>
+</table>
 ```
 
 ## Basic Usage
 
 ```javascript
 // Destructuring
-const { DataTable } = require('tbl-js');
+const { DataTable } = require('dotnet-datatable');
 
 // Direct import
-const DataTable = require('tbl-js').DataTable;
+const DataTable = require('dotnet-datatable').DataTable;
 
 // Create a new table
 const dt = new DataTable('Users');
@@ -176,7 +212,7 @@ dt.clear();
 ```
 
 ### Row State Management
-DataTable-js provides comprehensive row state tracking to monitor changes to your data. Each row has a state that indicates whether it has been added, modified, deleted, or remains unchanged.
+dotnet-datatable provides comprehensive row state tracking to monitor changes to your data. Each row has a state that indicates whether it has been added, modified, deleted, or remains unchanged.
 
 #### Row States
 - `ADDED`: New row that hasn't been saved
@@ -289,7 +325,7 @@ async function saveChanges(dataTable) {
 
 #### DataRowState Utility Methods
 ```javascript
-const { DataRowState } = require('tbl-js');
+const { DataRowState } = require('dotnet-datatable');
 
 // Check if a state represents a changed row
 console.log(DataRowState.isChanged('MODIFIED')); // true
@@ -372,7 +408,7 @@ const over25 = dt.findRows(row => row.get('age') > 25);
 ```
 
 ### Advanced Filtering Criteria
-DataTable-js supports various operators for advanced filtering. Here are all available operators:
+dotnet-datatable supports various operators for advanced filtering. Here are all available operators:
 
 ```javascript
 // Examples of all available operators
@@ -493,7 +529,7 @@ for (const row of newTable) {
 DataSet allows you to manage multiple related tables and define relationships between them.
 
 ```javascript
-const { DataSet, DataTable } = require('tbl-js');
+const { DataSet, DataTable } = require('dotnet-datatable');
 
 // Create a new dataset
 const ds = new DataSet('CompanyData');
@@ -538,7 +574,7 @@ console.log(johnsDept.get('name')); // 'IT'
 ### DataView Operations
 DataView provides a filtered and sorted view of a DataTable.
 ```javascript
-const { DataTable, DataView } = require('tbl-js');
+const { DataTable, DataView } = require('dotnet-datatable');
 
 // Create a table
 const users = new DataTable('Users');
@@ -589,7 +625,7 @@ const activeUsersArray = activeUsersView.toArray();
 The DataTable provides advanced schema management capabilities for working with table structures:
 
 ```javascript
-const { DataTable } = require('tbl-js');
+const { DataTable } = require('dotnet-datatable');
 
 // Create a table with schema
 const users = new DataTable('Users');
@@ -732,3 +768,9 @@ The library throws errors for:
 
 ## License
 MIT
+
+## Disclaimer
+
+A DataTable-inspired data structure for JavaScript and TypeScript, designed for developers who like the .NET DataTable, DataView and DataSet programming model.
+
+This project is not affiliated with Microsoft or the official .NET project.

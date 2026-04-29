@@ -1,37 +1,55 @@
 {
-  "name": "tbl-js",
-  "version": "1.2.1",
+  "name": "dotnet-datatable",
+  "version": "1.0.0",
   "description": "A JavaScript DataTable library with type validation, filtering, sorting and SQL database integration. Inspired by .NET's DataTable.",
   "main": "src/index.js",
+  "style": "css/aspnetcore-bootstrap5.css",
+  "exports": {
+    ".": {
+      "require": "./src/index.js",
+      "default": "./src/index.js"
+    },
+    "./css/webforms-2014": "./css/webforms-2014.css",
+    "./css/webforms-2014.css": "./css/webforms-2014.css",
+    "./css/webdatagrid-2014": "./css/webdatagrid-2014.css",
+    "./css/webdatagrid-2014.css": "./css/webdatagrid-2014.css",
+    "./css/mvc-bootstrap3": "./css/mvc-bootstrap3.css",
+    "./css/mvc-bootstrap3.css": "./css/mvc-bootstrap3.css",
+    "./css/aspnetcore-bootstrap5": "./css/aspnetcore-bootstrap5.css",
+    "./css/aspnetcore-bootstrap5.css": "./css/aspnetcore-bootstrap5.css",
+    "./css/blazor-fluentui": "./css/blazor-fluentui.css",
+    "./css/blazor-fluentui.css": "./css/blazor-fluentui.css"
+  },
   "scripts": {
     "test": "jest"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/mazeor9/tbl-js"
+    "url": "https://github.com/mazeor9/dotnet-datatable"
   },
   "keywords": [
     "datatable",
     "data-table",
-    "tabular-data",
     "database",
-    "sql",
     "postgresql",
     "mysql",
     "sqlite",
-    "data-manipulation",
-    "filtering",
-    "sorting",
     "data-validation",
     "schema",
     "dataset",
     "dataview",
-    "orm",
-    "query-results",
     "dotnet",
-    "table-management",
     "row-state",
-    "change-tracking"
+    "datagrid",
+    "dataview",
+    "dataset",
+    "gridview",
+    "dotnet",
+    "ado.net",
+    "table",
+    "grid",
+    "rows",
+    "columns"
   ],
   "author": "mazeor",
   "license": "MIT"

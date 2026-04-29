@@ -1,0 +1,62 @@
+.aspnet-webdatagrid,
+table.aspnet-webdatagrid,
+.dotnet-datatable,
+table.dotnet-datatable {
+  width: 100%;
+  font-family: "Segoe UI", SegoeUI, Tahoma, Arial, sans-serif;
+  font-size: 14px;
+  color: #2a2a2a;
+}
+
+table.aspnet-webdatagrid,
+table.dotnet-datatable {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: #fff;
+  border: 1px solid #cfd6df;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05);
+}
+
+table.aspnet-webdatagrid thead th,
+table.dotnet-datatable thead th {
+  padding: 10px 12px;
+  text-align: left;
+  font-weight: 700;
+  color: #1f2d3d;
+  background: linear-gradient(#ffffff, #eef2f6);
+  border-bottom: 1px solid #cfd6df;
+  white-space: nowrap;
+}
+
+table.aspnet-webdatagrid tbody td,
+table.dotnet-datatable tbody td {
+  padding: 9px 12px;
+  border-bottom: 1px solid #e6ebf1;
+  background: transparent;
+  vertical-align: middle;
+}
+
+table.aspnet-webdatagrid tbody tr:hover,
+table.dotnet-datatable tbody tr:hover {
+  background: #f4f8ff;
+}
+
+table.aspnet-webdatagrid .ddt-row-selected td,
+table.dotnet-datatable .ddt-row-selected td {
+  background: #ffe8a3;
+}
+
+table.aspnet-webdatagrid .ddt-sort-asc::after,
+table.dotnet-datatable .ddt-sort-asc::after {
+  content: " ▲";
+  font-size: 0.85em;
+  color: #0f6cbd;
+}
+
+table.aspnet-webdatagrid .ddt-sort-desc::after,
+table.dotnet-datatable .ddt-sort-desc::after {
+  content: " ▼";
+  font-size: 0.85em;
+  color: #0f6cbd;
+}
