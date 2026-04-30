@@ -2,6 +2,7 @@ const DataColumnCollection = require('./collections/DataColumnCollection');
 const DataRowCollection = require('./collections/DataRowCollection');
 const DataColumn = require('./DataColumn');
 const DataRow = require('./DataRow');
+const DataRowState = require('./enums/DataRowState');
 
 class DataTable {
     /**
@@ -17,10 +18,16 @@ class DataTable {
     /**
      * @param {string} columnName - Name of the column to add
      * @param {string|null} [dataType=null] - Data type of the column
+     * @param {Object} [options] - Column options (allowNull, unique, readOnly, defaultValue, primaryKey, caption, expression)
      * @returns {DataColumn} The created column
      */
-    addColumn(columnName, dataType = null) {
-        return this.columns.add(columnName, dataType);
+    addColumn(columnName, dataType = null, options = undefined) {
+        const column = this.columns.add(columnName, dataType, options);
+        if (options && typeof options === 'object') {
+            if (options.caption !== undefined) column.caption = options.caption;
+            if (options.expression !== undefined) column.expression = options.expression;
+        }
+        return column;
     }
 
     /**
@@ -39,7 +46,7 @@ class DataTable {
     }
 
     newRow() {
-        return new DataRow(this);
+        return new DataRow(this, DataRowState.DETACHED);
     }
 
     /**
@@ -84,7 +91,7 @@ class DataTable {
                 if (valueB == null) return -1;
 
                 // Gestione dei tipi
-                const column = this.columns._columns.get(columnNameOrComparer);
+                const column = this.columns.get(columnNameOrComparer);
                 let comparison = 0;
 
                 switch (column.dataType?.toLowerCase()) {
@@ -160,27 +167,33 @@ class DataTable {
         const newTable = new DataTable(this.tableName);
 
         // Clone columns
+        const primaryKey = [];
         for (const col of this.columns) {
-            const newColumn = new DataColumn(
-                col.columnName,
-                col.dataType,
-                col.allowNull,
-                col.defaultValue
-            );
+            const newColumn = newTable.addColumn(col.columnName, col.dataType, {
+                allowNull: col.allowNull,
+                unique: col.unique,
+                readOnly: col.readOnly,
+                defaultValue: col.defaultValue,
+                expression: col.expression
+            });
             newColumn.caption = col.caption;
-            newColumn.expression = col.expression;
-            newColumn.readOnly = col.readOnly;
-            newColumn.unique = col.unique;
-            newTable.columns.add(newColumn);
+            if (col.isPrimaryKey) {
+                primaryKey.push(col.columnName);
+            }
+        }
+        if (primaryKey.length > 0) {
+            newTable.setPrimaryKey(primaryKey);
         }
 
         // Clone rows state
         for (const row of this.rows) {
             const newRow = newTable.newRow();
-            Object.assign(newRow._values, row._values);
-            Object.assign(newRow._originalValues, row._originalValues);
+            for (const col of this.columns) {
+                newRow.set(col.columnName, row.get(col.columnName));
+            }
+            newRow._originalValues = { ...row._originalValues };
             newRow._rowState = row._rowState;
-            newTable.rows.add(newRow);
+            newTable.rows._addClonedRow(newRow);
         }
 
         // Clone other properties
@@ -331,20 +344,18 @@ class DataTable {
 
         // Import columns
         for (const columnDef of schema.columns) {
-            const column = table.addColumn(columnDef.name, columnDef.dataType);
-            column.allowNull = columnDef.allowNull !== undefined ? columnDef.allowNull : true;
-            column.defaultValue = columnDef.defaultValue;
-            column.expression = columnDef.expression;
-            column.readOnly = columnDef.readOnly || false;
-            column.unique = columnDef.unique || false;
+            const column = table.addColumn(columnDef.name, columnDef.dataType, {
+                allowNull: columnDef.allowNull !== undefined ? columnDef.allowNull : true,
+                defaultValue: columnDef.defaultValue,
+                expression: columnDef.expression,
+                readOnly: columnDef.readOnly || false,
+                unique: columnDef.unique || false,
+                caption: columnDef.caption || columnDef.name
+            });
             column.caption = columnDef.caption || columnDef.name;
-
-            // Set primary key
-            if (schema.primaryKey && schema.primaryKey.includes(columnDef.name)) {
-                column.isPrimaryKey = true;
-                column.allowNull = false; // Primary key cannot be null
-                column.unique = true;     // Primary key must be unique
-            }
+        }
+        if (schema.primaryKey && schema.primaryKey.length > 0) {
+            table.setPrimaryKey(schema.primaryKey);
         }
 
         return table;
@@ -368,7 +379,7 @@ class DataTable {
             if (!otherTable.columnExists(column.columnName)) {
                 differences.missingColumns.push(column.columnName);
             } else {
-                const otherColumn = otherTable.columns._columns.get(column.columnName);
+                const otherColumn = otherTable.columns.get(column.columnName);
 
                 // Check for type mismatches
                 if (column.dataType !== otherColumn.dataType) {
@@ -419,17 +430,15 @@ class DataTable {
         // Add missing columns
         if (addMissingColumns) {
             for (const columnName of differences.missingColumns) {
-                const sourceColumn = sourceTable.columns._columns.get(columnName);
-                const newColumn = this.addColumn(
-                    columnName,
-                    sourceColumn.dataType
-                );
-
-                newColumn.allowNull = sourceColumn.allowNull;
-                newColumn.defaultValue = sourceColumn.defaultValue;
-                newColumn.expression = sourceColumn.expression;
-                newColumn.readOnly = sourceColumn.readOnly;
-                newColumn.unique = sourceColumn.unique;
+                const sourceColumn = sourceTable.columns.get(columnName);
+                const newColumn = this.addColumn(columnName, sourceColumn.dataType, {
+                    allowNull: sourceColumn.allowNull,
+                    defaultValue: sourceColumn.defaultValue,
+                    expression: sourceColumn.expression,
+                    readOnly: sourceColumn.readOnly,
+                    unique: sourceColumn.unique,
+                    caption: sourceColumn.caption
+                });
                 newColumn.caption = sourceColumn.caption;
 
                 result.addedColumns.push(columnName);
@@ -446,8 +455,8 @@ class DataTable {
 
         // Update column definitions
         for (const mismatch of differences.typeMismatches) {
-            const column = this.columns._columns.get(mismatch.column);
-            column.dataType = sourceTable.columns._columns.get(mismatch.column).dataType;
+            const column = this.columns.get(mismatch.column);
+            column.dataType = sourceTable.columns.get(mismatch.column).dataType;
             result.modifiedColumns.push({
                 column: mismatch.column,
                 change: 'dataType',
@@ -457,8 +466,8 @@ class DataTable {
         }
 
         for (const diff of differences.nullabilityDifferences) {
-            const column = this.columns._columns.get(diff.column);
-            column.allowNull = sourceTable.columns._columns.get(diff.column).allowNull;
+            const column = this.columns.get(diff.column);
+            column.allowNull = sourceTable.columns.get(diff.column).allowNull;
             result.modifiedColumns.push({
                 column: diff.column,
                 change: 'allowNull',
@@ -505,11 +514,20 @@ class DataTable {
      * Rejects changes for all modified rows in the table
      */
     rejectAllChanges() {
-        for (const row of this.rows) {
-            if (row.hasChanges() && row.getRowState() !== 'ADDED') {
+        const snapshot = [...this.rows._rows];
+        for (const row of snapshot) {
+            if (row.hasChanges()) {
                 row.rejectChanges();
             }
         }
+    }
+
+    acceptChanges() {
+        return this.acceptAllChanges();
+    }
+
+    rejectChanges() {
+        return this.rejectAllChanges();
     }
 
     /**
@@ -587,14 +605,26 @@ class DataTable {
      */
     clearChanges() {
         for (const row of this.rows._rows) {
-            if (row.getRowState() !== 'DELETED') {
-                row._setRowState('UNCHANGED');
+            if (row.getRowState() !== DataRowState.DELETED) {
+                row._setRowState(DataRowState.UNCHANGED);
                 // Clear original values tracking
                 if (row._originalValues) {
                     row._originalValues = {};
                 }
             }
         }
+    }
+
+    setPrimaryKey(columnNames) {
+        this.columns.setPrimaryKey(columnNames);
+    }
+
+    getPrimaryKey() {
+        return this.columns.getPrimaryKey();
+    }
+
+    find(key) {
+        return this.rows.find(key);
     }
 
 }

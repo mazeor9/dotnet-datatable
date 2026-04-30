@@ -176,6 +176,23 @@ dt.addColumn('birthDate', 'date');
 dt.addColumn('description');
 ```
 
+Column options (constraints and defaults):
+
+```javascript
+dt.addColumn('id', 'number', { primaryKey: true, allowNull: false, readOnly: true, defaultValue: 0 });
+dt.addColumn('email', 'string', { unique: true });
+dt.addColumn('createdAt', 'date', { defaultValue: () => new Date() });
+```
+
+Read-only columns can be set while the row is `DETACHED`:
+
+```javascript
+const row = dt.newRow();
+row.set('id', 1);     // ok (DETACHED)
+dt.rows.add(row);     // now ADDED
+row.set('id', 2);     // throws (read-only)
+```
+
 #### Adding Rows
 ```javascript
 // Add row with object
@@ -189,6 +206,35 @@ const row = dt.newRow();
 row.set('name', 'Alice');
 row.set('age', 28);
 dt.rows.add(row);
+```
+
+Primary key, unique and find:
+
+```javascript
+const users = new DataTable('Users');
+users.addColumn('id', 'number', { primaryKey: true });
+users.addColumn('email', 'string', { unique: true });
+
+users.addRow({ id: 1, email: 'a@test.com' });
+users.addRow({ id: 2, email: 'b@test.com' });
+
+const u1 = users.find(1);
+console.log(u1.get('email')); // 'a@test.com'
+```
+
+Composite primary key:
+
+```javascript
+const sessions = new DataTable('Sessions');
+sessions.addColumn('tenantId', 'number', { allowNull: false });
+sessions.addColumn('userId', 'number', { allowNull: false });
+sessions.addColumn('token', 'string');
+
+sessions.setPrimaryKey(['tenantId', 'userId']);
+
+sessions.addRow({ tenantId: 1, userId: 10, token: 'x' });
+const s = sessions.find([1, 10]);
+console.log(s.get('token')); // 'x'
 ```
 
 ### Row Operations
@@ -215,6 +261,7 @@ dt.clear();
 dotnet-datatable provides comprehensive row state tracking to monitor changes to your data. Each row has a state that indicates whether it has been added, modified, deleted, or remains unchanged.
 
 #### Row States
+- `DETACHED`: Row created via `newRow()` that is not part of the table yet
 - `ADDED`: New row that hasn't been saved
 - `MODIFIED`: Existing row that has been changed
 - `DELETED`: Row marked for deletion
@@ -224,7 +271,7 @@ dotnet-datatable provides comprehensive row state tracking to monitor changes to
 ```javascript
 // Check row state
 const row = dt.rows(0);
-console.log(row.getRowState()); // 'ADDED', 'MODIFIED', 'DELETED', or 'UNCHANGED'
+console.log(row.getRowState()); // 'DETACHED', 'ADDED', 'MODIFIED', 'DELETED', or 'UNCHANGED'
 
 // Check if row has changes
 if (row.hasChanges()) {
@@ -244,9 +291,11 @@ console.log(row.getRowState()); // 'DELETED'
 // Example workflow
 const row = dt.newRow();
 row.set('name', 'John');
-console.log(row.getRowState()); // 'ADDED'
+console.log(row.getRowState()); // 'DETACHED'
 
 dt.rows.add(row);
+console.log(row.getRowState()); // 'ADDED'
+
 row.acceptChanges();
 console.log(row.getRowState()); // 'UNCHANGED'
 
@@ -262,10 +311,10 @@ console.log(row.getRowState()); // 'UNCHANGED'
 #### Table-Level State Operations
 ```javascript
 // Accept all changes in the table
-dt.acceptAllChanges();
+dt.acceptChanges();
 
 // Reject all changes in the table
-dt.rejectAllChanges();
+dt.rejectChanges();
 
 // Get all rows with changes
 const changedRows = dt.getChanges();
@@ -312,7 +361,7 @@ async function saveChanges(dataTable) {
         }
         
         // Accept all changes after successful save
-        dataTable.acceptAllChanges();
+        dataTable.acceptChanges();
         console.log('All changes saved successfully');
         
     } catch (error) {

@@ -1,15 +1,24 @@
 const DataRowState = require('./enums/DataRowState');
+const {
+    ColumnNotFoundError,
+    TypeMismatchError,
+    ConstraintViolationError,
+    DuplicatePrimaryKeyError,
+    ReadOnlyColumnError,
+    InvalidRowStateError
+} = require('./errors');
 
 class DataRow {
-    constructor(table) {
+    constructor(table, initialState = DataRowState.DETACHED) {
         this._table = table;
         this._values = {};
-        this._rowState = DataRowState.ADDED;
+        this._rowState = initialState;
         this._originalValues = {};
 
         for (const column of table.columns) {
-            this._values[column.columnName] = column.defaultValue;
+            this._values[column.columnName] = this._evaluateDefaultValue(column);
         }
+        this._originalValues = { ...this._values };
     }
 
     /**
@@ -29,17 +38,11 @@ class DataRow {
      */
     get(index) {
         if (typeof index === 'number') {
-            const columnNames = Array.from(this._table.columns._columns.keys());
-            const columnName = columnNames[index];
-            if (!this._table.columns.contains(columnName)) {
-                throw new Error(`Column at index ${index} does not exist`);
-            }
-            return this._values[columnName];
+            const column = this._table.columns.get(index);
+            return this._values[column.columnName];
         }
-        if (!this._table.columns.contains(index)) {
-            throw new Error(`Column '${index}' does not exist`);
-        }
-        return this._values[index];
+        const column = this._table.columns.get(index);
+        return this._values[column.columnName];
     }
 
     /**
@@ -50,54 +53,44 @@ class DataRow {
      * @throws {Error} If value type doesn't match column data type
      */
     set(columnName, value) {
-        if (!this._table.columns.contains(columnName)) {
-            throw new Error(`Column '${columnName}' does not exist`);
+        if (this._rowState === DataRowState.DELETED) {
+            throw new InvalidRowStateError("Cannot set values on a DELETED row");
         }
-    
-        const column = this._table.columns._columns.get(columnName);
-    
-        // Null validation
-        if (value === null && !column.allowNull) {
-            throw new Error(`Column '${columnName}' does not allow null values`);
+
+        let column;
+        try {
+            column = this._table.columns.get(columnName);
+        } catch (e) {
+            throw new ColumnNotFoundError(`Column '${columnName}' does not exist`);
         }
-    
-        // Type validation
-        if (value !== null && column.dataType) {
-            switch(column.dataType.toLowerCase()) {
-                case 'number':
-                    if (isNaN(Number(value))) {
-                        throw new Error(`Value '${value}' cannot be converted to number for column '${columnName}'`);
-                    }
-                    value = Number(value);
-                    break;
-                case 'date':
-                    if (!(value instanceof Date) && isNaN(Date.parse(value))) {
-                        throw new Error(`Value '${value}' cannot be converted to date for column '${columnName}'`);
-                    }
-                    value = new Date(value);
-                    break;
-                case 'string':
-                    value = String(value);
-                    break;
-                case 'boolean':
-                    if (typeof value !== 'boolean') {
-                        value = Boolean(value);
-                    }
-                    break;
+
+        if (column.readOnly && this._rowState !== DataRowState.DETACHED) {
+            if (!this._areEqual(this._values[columnName], value)) {
+                throw new ReadOnlyColumnError(`Column '${columnName}' is read-only`);
             }
+            return;
         }
-    
-        // Save original value if not already saved
-        if (!this._originalValues.hasOwnProperty(columnName)) {
-            this._originalValues[columnName] = this._values[columnName];
+
+        const coercedValue = this._coerceValue(column, value);
+
+        if ((coercedValue === null || coercedValue === undefined) && column.allowNull === false) {
+            throw new ConstraintViolationError(`Column '${columnName}' does not allow null values`);
         }
-    
-        this._values[columnName] = value;
-        
-        // Update state only if not already ADDED
-        if (this._rowState !== DataRowState.ADDED) {
+
+        this._validateUniqueness(columnName, coercedValue);
+        this._validatePrimaryKeyIfNeeded(columnName, coercedValue);
+
+        const currentValue = this._values[columnName];
+        if (this._areEqual(currentValue, coercedValue)) {
+            return;
+        }
+
+        if (this._rowState === DataRowState.UNCHANGED) {
+            this._originalValues = { ...this._values };
             this._rowState = DataRowState.MODIFIED;
         }
+
+        this._values[columnName] = coercedValue;
     }
 
     toJSON() {
@@ -114,6 +107,16 @@ class DataRow {
      * Accepts all changes made to the row
      */
     acceptChanges() {
+        if (this._rowState === DataRowState.DETACHED) {
+            throw new InvalidRowStateError("Cannot accept changes on a DETACHED row");
+        }
+
+        if (this._rowState === DataRowState.DELETED) {
+            this._detachFromTable();
+            this._rowState = DataRowState.DETACHED;
+            return;
+        }
+
         this._originalValues = { ...this._values };
         this._rowState = DataRowState.UNCHANGED;
     }
@@ -122,12 +125,23 @@ class DataRow {
      * Rejects all changes and restores original values
      */
     rejectChanges() {
-        if (this._rowState === DataRowState.ADDED) {
-            throw new Error('Cannot reject changes for newly added rows');
+        if (this._rowState === DataRowState.MODIFIED) {
+            this._values = { ...this._originalValues };
+            this._rowState = DataRowState.UNCHANGED;
+            return;
         }
-        
-        this._values = { ...this._originalValues };
-        this._rowState = DataRowState.UNCHANGED;
+
+        if (this._rowState === DataRowState.DELETED) {
+            this._values = { ...this._originalValues };
+            this._rowState = DataRowState.UNCHANGED;
+            return;
+        }
+
+        if (this._rowState === DataRowState.ADDED) {
+            this._detachFromTable();
+            this._rowState = DataRowState.DETACHED;
+            return;
+        }
     }
 
     /**
@@ -150,10 +164,148 @@ class DataRow {
      * Marks the row as deleted
      */
     delete() {
+        if (this._rowState === DataRowState.DETACHED) {
+            throw new InvalidRowStateError("Cannot delete a DETACHED row");
+        }
         if (this._rowState === DataRowState.DELETED) {
             return;
         }
+        if (this._rowState === DataRowState.UNCHANGED) {
+            this._originalValues = { ...this._values };
+        }
         this._rowState = DataRowState.DELETED;
+    }
+
+    toObject() {
+        return { ...this._values };
+    }
+
+    _setRowState(state) {
+        this._rowState = state;
+    }
+
+    _attachToTable(table) {
+        this._table = table;
+        if (this._rowState === DataRowState.DETACHED) {
+            this._rowState = DataRowState.ADDED;
+        }
+    }
+
+    _detachFromTable() {
+        if (!this._table || !this._table.rows || typeof this._table.rows.remove !== "function") {
+            return;
+        }
+        this._table.rows.remove(this);
+    }
+
+    _initializeNewColumn(column) {
+        const value = this._evaluateDefaultValue(column);
+        this._values[column.columnName] = value;
+        if (this._rowState === DataRowState.UNCHANGED) {
+            this._originalValues[column.columnName] = value;
+        }
+    }
+
+    _evaluateDefaultValue(column) {
+        if (typeof column.defaultValue === "function") {
+            return column.defaultValue();
+        }
+        return column.defaultValue;
+    }
+
+    _coerceValue(column, value) {
+        if (value === null || value === undefined || !column.dataType) {
+            return value;
+        }
+
+        switch (String(column.dataType).toLowerCase()) {
+            case "number": {
+                const num = Number(value);
+                if (Number.isNaN(num)) {
+                    throw new TypeMismatchError(
+                        `Type mismatch for column '${column.columnName}': expected number`
+                    );
+                }
+                return num;
+            }
+            case "date": {
+                if (value instanceof Date) {
+                    if (Number.isNaN(value.getTime())) {
+                        throw new TypeMismatchError(
+                            `Type mismatch for column '${column.columnName}': invalid date`
+                        );
+                    }
+                    return value;
+                }
+                const date = new Date(value);
+                if (Number.isNaN(date.getTime())) {
+                    throw new TypeMismatchError(
+                        `Type mismatch for column '${column.columnName}': expected date`
+                    );
+                }
+                return date;
+            }
+            case "string":
+                return String(value);
+            case "boolean":
+                return typeof value === "boolean" ? value : Boolean(value);
+            default:
+                return value;
+        }
+    }
+
+    _areEqual(a, b) {
+        if (a instanceof Date && b instanceof Date) {
+            return a.getTime() === b.getTime();
+        }
+        return a === b;
+    }
+
+    _validateUniqueness(columnName, value) {
+        const column = this._table.columns.get(columnName);
+        if (!column.unique) {
+            return;
+        }
+        const pk = this._table.columns.getPrimaryKey();
+        if (pk.length > 1 && pk.includes(columnName)) {
+            return;
+        }
+        if (value === null || value === undefined) {
+            return;
+        }
+        for (const row of this._table.rows?._rows ?? []) {
+            if (row === this) continue;
+            if (typeof row.getRowState === "function" && row.getRowState() === DataRowState.DELETED) continue;
+            if (this._areEqual(row.get(columnName), value)) {
+                if (column.isPrimaryKey) {
+                    throw new DuplicatePrimaryKeyError(`Duplicate primary key for column '${columnName}': ${value}`);
+                }
+                throw new ConstraintViolationError(`Constraint violation: duplicate value for unique column '${columnName}'`);
+            }
+        }
+    }
+
+    _validatePrimaryKeyIfNeeded(columnName, newValue) {
+        const pk = this._table.columns.getPrimaryKey();
+        if (pk.length === 0 || !pk.includes(columnName)) {
+            return;
+        }
+        const keyValues = pk.map((name) => (name === columnName ? newValue : this._values[name]));
+        if (keyValues.some((v) => v === null || v === undefined)) {
+            return;
+        }
+        for (const row of this._table.rows?._rows ?? []) {
+            if (row === this) continue;
+            if (typeof row.getRowState === "function" && row.getRowState() === DataRowState.DELETED) continue;
+            const otherKeyValues = pk.map((name) => row.get(name));
+            if (otherKeyValues.some((v) => v === null || v === undefined)) continue;
+            const same = keyValues.every((v, i) => this._areEqual(v, otherKeyValues[i]));
+            if (same) {
+                throw new DuplicatePrimaryKeyError(
+                    `Duplicate primary key (${pk.join(",")}): ${keyValues.join(",")}`
+                );
+            }
+        }
     }
 }
 

@@ -72,7 +72,7 @@ class DataSet {
         
         if (typeof parentTableOrColumn === 'string' && parentColumnName) {
             const parentTable = this.table(parentTableOrColumn);
-            parentColumn = parentTable.columns._columns.get(parentColumnName);
+            parentColumn = parentTable.columns.get(parentColumnName);
             if (!parentColumn) {
                 throw new Error(`Column '${parentColumnName}' does not exist in table '${parentTableOrColumn}'`);
             }
@@ -82,7 +82,7 @@ class DataSet {
         
         if (typeof childTableOrColumn === 'string' && childColumnName) {
             const childTable = this.table(childTableOrColumn);
-            childColumn = childTable.columns._columns.get(childColumnName);
+            childColumn = childTable.columns.get(childColumnName);
             if (!childColumn) {
                 throw new Error(`Column '${childColumnName}' does not exist in table '${childTableOrColumn}'`);
             }
@@ -192,8 +192,8 @@ class DataSet {
             const parentTable = newDataSet.table(relation.parentTable.tableName);
             const childTable = newDataSet.table(relation.childTable.tableName);
             
-            const parentColumn = parentTable.columns._columns.get(relation.parentColumn.columnName);
-            const childColumn = childTable.columns._columns.get(relation.childColumn.columnName);
+            const parentColumn = parentTable.columns.get(relation.parentColumn.columnName);
+            const childColumn = childTable.columns.get(relation.childColumn.columnName);
             
             newDataSet.addRelation(
                 relation.relationName,

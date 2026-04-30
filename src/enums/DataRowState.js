@@ -1,4 +1,5 @@
 const DataRowState = {
+    DETACHED: 'DETACHED',
     ADDED: 'ADDED',
     MODIFIED: 'MODIFIED',
     DELETED: 'DELETED',
@@ -12,6 +13,10 @@ DataRowState.isChanged = function(state) {
 
 DataRowState.isUnchanged = function(state) {
     return state === this.UNCHANGED;
+};
+
+DataRowState.isDetached = function(state) {
+    return state === this.DETACHED;
 };
 
 module.exports = DataRowState;
