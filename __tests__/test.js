@@ -317,3 +317,257 @@ test('DataSet.merge merges existing tables and adds missing tables and relations
     assert.equal(target.table('Users').find(2).get('name'), 'Bob');
     assert.equal(target.table('Departments').rows.count, 2);
 });
+
+test('DataTable.fromObjects infers schema and imports rows as UNCHANGED with original values', () => {
+    const createdAt = new Date('2026-01-01T10:00:00Z');
+    const users = DataTable.fromObjects([
+        { id: 1, name: 'Mario', active: true, createdAt, metadata: { tier: 'gold' } },
+        { id: 2, name: 'Luca', active: false, createdAt: null, metadata: null }
+    ], {
+        tableName: 'Users',
+        primaryKey: 'id'
+    });
+
+    assert.equal(users.tableName, 'Users');
+    assert.equal(users.columns.get('id').dataType, 'integer');
+    assert.equal(users.columns.get('active').dataType, 'boolean');
+    assert.equal(users.columns.get('createdAt').dataType, 'date');
+    assert.equal(users.rows.count, 2);
+    assert.equal(users.rows[0].getRowState(), DataRowState.UNCHANGED);
+    assert.equal(users.rows[0].originalValues.name, 'Mario');
+    assert.deepEqual(users.getPrimaryKey(), ['id']);
+
+    users.rows[0].set('name', 'Mario Rossi');
+    assert.equal(users.rows[0].getRowState(), DataRowState.MODIFIED);
+    assert.equal(users.rows[0].originalValues.name, 'Mario');
+    assert.equal(users.rows[0].currentValues.name, 'Mario Rossi');
+});
+
+test('DataTable.fromQueryResult supports PostgreSQL-like results and field metadata', () => {
+    const pgResult = {
+        rows: [{ id: 1, name: 'Mario' }],
+        fields: [{ name: 'id', dataTypeID: 23 }, { name: 'name', dataTypeID: 1043 }]
+    };
+
+    const users = DataTable.fromQueryResult(pgResult, {
+        tableName: 'Users',
+        primaryKey: 'id',
+        useFieldMetadata: true
+    });
+
+    assert.equal(users.columns.get('id').dataType, 'integer');
+    assert.equal(users.columns.get('name').dataType, 'string');
+    assert.equal(users.columns.get('id').sourceColumn, 'id');
+    assert.equal(users.findByPrimaryKey(1).get('name'), 'Mario');
+    assert.equal(users.findByPrimaryKey(1).getRowState(), DataRowState.UNCHANGED);
+});
+
+test('DataTable.fromQueryResult supports MySQL-like tuple results', () => {
+    const mysqlResult = [
+        [{ id: 1, name: 'Mario' }],
+        [{ name: 'id', columnType: 3 }, { name: 'name', columnType: 253 }]
+    ];
+
+    const users = DataTable.fromQueryResult(mysqlResult, {
+        tableName: 'Users',
+        primaryKey: 'id'
+    });
+
+    assert.equal(users.rows.count, 1);
+    assert.equal(users.columns.get('id').dataType, 'integer');
+    assert.equal(users.find(1).get('name'), 'Mario');
+});
+
+test('DataTable.fromQueryResult supports SQL Server-like and wrapper results', () => {
+    const sqlServerResult = {
+        recordset: [{ id: 1, name: 'Mario' }],
+        recordsets: [[{ id: 1, name: 'Mario' }]],
+        rowsAffected: [1]
+    };
+
+    const users = DataTable.fromQueryResult(sqlServerResult, {
+        tableName: 'Users',
+        primaryKey: 'id'
+    });
+    assert.equal(users.find(1).get('name'), 'Mario');
+
+    const wrapped = DataTable.fromQueryResult({ data: { items: [{ id: 2, name: 'Luca' }] } }, {
+        rowsPath: 'data.items',
+        tableName: 'Users',
+        primaryKey: 'id'
+    });
+    assert.equal(wrapped.find(2).get('name'), 'Luca');
+});
+
+test('DataTable.fromRows applies include, exclude, rename and columnNameTransform options', () => {
+    const users = DataTable.fromRows([
+        { user_id: 1, full_name: 'Mario Rossi', ignored_value: 'x', created_at: '2026-01-01T00:00:00Z' }
+    ], {
+        tableName: 'Users',
+        renameColumns: {
+            user_id: 'id',
+            full_name: 'full_name'
+        },
+        columnNameTransform: 'camelCase',
+        excludeColumns: ['ignored_value'],
+        columns: {
+            created_at: { type: 'date' }
+        },
+        primaryKey: 'id'
+    });
+
+    assert.equal(users.columnExists('id'), true);
+    assert.equal(users.columnExists('fullName'), true);
+    assert.equal(users.columnExists('ignoredValue'), false);
+    assert.ok(users.rows[0].get('createdAt') instanceof Date);
+    assert.equal(users.find(1).get('fullName'), 'Mario Rossi');
+});
+
+test('DataTable.loadRows clears, appends, creates missing columns and can ignore extras', () => {
+    const users = new DataTable('Users');
+    users.addColumn('id', 'integer', { primaryKey: true });
+    users.addColumn('name', 'string');
+
+    users.loadRows([{ id: 1, name: 'Mario' }], { clearBeforeLoad: true });
+    assert.equal(users.rows.count, 1);
+    assert.equal(users.rows[0].getRowState(), DataRowState.UNCHANGED);
+
+    users.loadRows([{ id: 2, name: 'Luca', active: true }], {
+        autoCreateColumns: true
+    });
+    assert.equal(users.columnExists('active'), true);
+    assert.equal(users.rows.count, 2);
+
+    users.loadRows([{ id: 3, name: 'Anna', extra: 'ignored' }], {
+        autoCreateColumns: false,
+        ignoreExtraColumns: true
+    });
+    assert.equal(users.rows.count, 3);
+    assert.equal(users.columnExists('extra'), false);
+
+    users.loadRows([{ id: 4, name: 'Nina' }], {
+        append: false,
+        autoCreateColumns: false
+    });
+    assert.equal(users.rows.count, 1);
+    assert.equal(users.find(4).get('name'), 'Nina');
+});
+
+test('DataTable.mergeRows updates existing rows and inserts missing rows by primary key', () => {
+    const users = DataTable.fromObjects([
+        { id: 1, name: 'Mario' },
+        { id: 2, name: 'Luca' }
+    ], {
+        tableName: 'Users',
+        primaryKey: 'id'
+    });
+
+    const result = users.mergeRows([
+        { id: 1, name: 'Mario DB' },
+        { id: 3, name: 'Anna' }
+    ], {
+        primaryKey: 'id',
+        updateExisting: true,
+        addMissing: true,
+        markModified: false
+    });
+
+    assert.equal(result.updatedRows, 1);
+    assert.equal(result.insertedRows, 1);
+    assert.equal(users.find(1).get('name'), 'Mario DB');
+    assert.equal(users.find(1).getRowState(), DataRowState.UNCHANGED);
+    assert.equal(users.find(3).get('name'), 'Anna');
+});
+
+test('DataTable exports objects and tracks Added, Modified, Deleted changes', () => {
+    const users = DataTable.fromObjects([{ id: 1, name: 'Mario', createdAt: new Date('2026-01-01T00:00:00Z') }], {
+        tableName: 'Users',
+        primaryKey: 'id'
+    });
+
+    users.find(1).set('name', 'Mario Rossi');
+    const added = users.addRow({ id: 2, name: 'Luca', createdAt: new Date('2026-01-02T00:00:00Z') });
+    users.find(1).delete();
+
+    assert.equal(added.getRowState(), DataRowState.ADDED);
+    assert.equal(users.getChanges().length, 2);
+    assert.equal(users.getChanges('Added').length, 1);
+    assert.equal(users.getChanges('Deleted').length, 1);
+
+    const exported = users.toObjects({
+        includeDeleted: true,
+        includeRowState: true,
+        includeOriginalValues: true,
+        dateMode: 'iso-string',
+        columnNameMapping: { createdAt: 'created_at' }
+    });
+    assert.equal(exported[0].rowState, DataRowState.DELETED);
+    assert.equal(exported[0].originalValues.name, 'Mario');
+    assert.equal(exported[0].created_at, '2026-01-01T00:00:00.000Z');
+
+    users.rejectChanges();
+    assert.equal(users.rows.count, 1);
+    assert.equal(users.find(1).get('name'), 'Mario');
+
+    users.find(1).set('name', 'Mario Rossi');
+    users.acceptChanges();
+    assert.equal(users.find(1).getRowState(), DataRowState.UNCHANGED);
+    assert.equal(users.find(1).originalValues.name, 'Mario Rossi');
+});
+
+test('DataView supports where, filter, orderBy, take, skip and toDataTable', () => {
+    const users = DataTable.fromObjects([
+        { id: 1, name: 'Mario', age: 31, active: true },
+        { id: 2, name: 'Luca', age: 17, active: true },
+        { id: 3, name: 'Anna', age: 44, active: true },
+        { id: 4, name: 'Paolo', age: 28, active: false }
+    ], {
+        tableName: 'Users',
+        primaryKey: 'id'
+    });
+
+    const activeAdults = users
+        .createView()
+        .filter(row => row.active === true)
+        .where('age', '>', 18)
+        .orderBy('name', 'asc')
+        .skip(1)
+        .take(1)
+        .toObjects();
+
+    assert.deepEqual(activeAdults.map(row => row.name), ['Mario']);
+
+    const stringFiltered = users.createView({
+        filter: "age >= 18 AND active = true",
+        sort: 'age DESC'
+    });
+    assert.deepEqual(stringFiltered.toObjects().map(row => row.name), ['Anna', 'Mario']);
+    assert.equal(stringFiltered.toDataTable().rows.count, 2);
+});
+
+test('DataSet.fromRecordsets and DataRelation navigate parent and child rows', () => {
+    const dataSet = DataSet.fromRecordsets([
+        [{ id: 1, name: 'Mario' }],
+        [
+            { id: 10, user_id: 1, total: 100 },
+            { id: 11, user_id: 1, total: 200 }
+        ]
+    ], {
+        tableNames: ['Users', 'Orders'],
+        relations: [
+            {
+                name: 'UserOrders',
+                parentTable: 'Users',
+                parentColumn: 'id',
+                childTable: 'Orders',
+                childColumn: 'user_id'
+            }
+        ]
+    });
+
+    const relation = dataSet.getRelation('UserOrders');
+    const user = dataSet.table('Users').rows[0];
+    const orders = relation.getChildRows(user);
+    assert.equal(orders.length, 2);
+    assert.equal(relation.getParentRow(orders[0]).get('name'), 'Mario');
+});

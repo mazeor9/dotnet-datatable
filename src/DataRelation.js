@@ -25,6 +25,20 @@ class DataRelation {
         return parentValue === childValue;
     }
 
+    getChildRows(parentRow) {
+        const parentValue = parentRow.get(this.parentColumn.columnName);
+        return this.childTable.findRows(row =>
+            row.get(this.childColumn.columnName) === parentValue
+        );
+    }
+
+    getParentRow(childRow) {
+        const childValue = childRow.get(this.childColumn.columnName);
+        return this.parentTable.findOne(row =>
+            row.get(this.parentColumn.columnName) === childValue
+        );
+    }
+
     /**
      * Returns a string representation of the relation
      * @returns {string} String representation

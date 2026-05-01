@@ -5,6 +5,10 @@ const DataRowState = require('./enums/DataRowState');
 const DataSet = require('./DataSet');
 const DataRelation = require('./DataRelation');
 const DataView = require('./DataView');
+const QueryResultMapper = require('./mapping/QueryResultMapper');
+const SchemaInferer = require('./mapping/SchemaInferer');
+const TypeMapper = require('./mapping/TypeMapper');
+const ColumnMetadataNormalizer = require('./mapping/ColumnMetadataNormalizer');
 
 module.exports = {
     DataTable,
@@ -13,5 +17,9 @@ module.exports = {
     DataRowState,
     DataSet,
     DataRelation,
-    DataView
+    DataView,
+    QueryResultMapper,
+    SchemaInferer,
+    TypeMapper,
+    ColumnMetadataNormalizer
 };

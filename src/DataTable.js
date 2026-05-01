@@ -2,12 +2,14 @@ const DataColumnCollection = require('./collections/DataColumnCollection');
 const DataRowCollection = require('./collections/DataRowCollection');
 const DataColumn = require('./DataColumn');
 const DataRow = require('./DataRow');
+const DataView = require('./DataView');
 const DataRowState = require('./enums/DataRowState');
 const {
     ConstraintViolationError,
     SchemaMismatchError,
     TypeMismatchError
 } = require('./errors');
+const { cloneValue, cloneValues, normalizeRowState } = require('./utils/typeUtils');
 
 class DataTable {
     /**
@@ -60,6 +62,37 @@ class DataTable {
      */
     addRow(values) {
         return this.rows.add(values);
+    }
+
+    static fromObjects(objects, options = {}) {
+        const table = new DataTable(options.tableName || options.name || '');
+        const DataTableLoader = require('./mapping/DataTableLoader');
+        DataTableLoader.load(table, objects, {
+            ...options,
+            clearBeforeLoad: false,
+            rowState: options.rowState || DataRowState.UNCHANGED,
+            preserveOriginalValues: options.preserveOriginalValues !== false
+        });
+        return table;
+    }
+
+    static fromRows(rows, options = {}) {
+        return DataTable.fromObjects(rows, options);
+    }
+
+    static fromRecords(records, options = {}) {
+        return DataTable.fromObjects(records, options);
+    }
+
+    static fromQueryResult(queryResult, options = {}) {
+        const QueryResultMapper = require('./mapping/QueryResultMapper');
+        const mapped = QueryResultMapper.map(queryResult, options);
+        return DataTable.fromRows(mapped.rows, {
+            ...options,
+            provider: options.provider || mapped.provider,
+            columnMetadata: options.columnMetadata || mapped.fields,
+            rowState: options.rowState || DataRowState.UNCHANGED
+        });
     }
 
     /**
@@ -179,7 +212,10 @@ class DataTable {
                 unique: col.unique,
                 readOnly: col.readOnly,
                 defaultValue: col.defaultValue,
-                expression: col.expression
+                expression: col.expression,
+                maxLength: col.maxLength,
+                sourceColumn: col.sourceColumn,
+                metadata: col.metadata
             });
             newColumn.caption = col.caption;
             if (col.isPrimaryKey) {
@@ -196,7 +232,7 @@ class DataTable {
             for (const col of this.columns) {
                 newRow.set(col.columnName, row.get(col.columnName));
             }
-            newRow._originalValues = { ...row._originalValues };
+            newRow._originalValues = cloneValues(row._originalValues);
             newRow._rowState = row._rowState;
             newTable.rows._addClonedRow(newRow);
         }
@@ -259,26 +295,15 @@ class DataTable {
      */
     loadFromQuery(queryResults) {
         if (!Array.isArray(queryResults) || queryResults.length === 0) {
-            return;
+            return this;
         }
 
-        // Clear existing data
-        this.clear();
-
-        // Create columns from the first row
-        const firstRow = queryResults[0];
-        for (const columnName in firstRow) {
-            const value = firstRow[columnName];
-            let dataType = typeof value;
-            if (value instanceof Date) dataType = 'date';
-            if (value === null) dataType = 'string'; // default type for null values
-
-            this.addColumn(columnName, dataType);
-        }
-
-        // Add all rows
-        queryResults.forEach(row => {
-            this.addRow(row);
+        return this.loadRows(queryResults, {
+            clearBeforeLoad: true,
+            inferSchema: true,
+            autoCreateColumns: true,
+            rowState: DataRowState.UNCHANGED,
+            preserveOriginalValues: true
         });
     }
 
@@ -288,7 +313,115 @@ class DataTable {
      */
     async loadFromQueryAsync(queryPromise) {
         const results = await queryPromise;
-        this.loadFromQuery(results);
+        return this.loadFromQuery(results);
+    }
+
+    loadRows(rows, options = {}) {
+        const DataTableLoader = require('./mapping/DataTableLoader');
+        return DataTableLoader.load(this, rows, options);
+    }
+
+    mergeRows(rows, options = {}) {
+        const DataTableLoader = require('./mapping/DataTableLoader');
+        const primaryKey = normalizePrimaryKey(options.primaryKey || this.getPrimaryKey());
+        if (primaryKey.length === 0) {
+            throw new SchemaMismatchError('mergeRows() requires a primary key.');
+        }
+
+        for (const columnName of primaryKey) {
+            if (!this.columnExists(columnName)) {
+                throw new SchemaMismatchError(`Missing primary key column: "${columnName}"`);
+            }
+        }
+
+        const opts = {
+            updateExisting: options.updateExisting !== false,
+            addMissing: options.addMissing !== false,
+            markModified: options.markModified === true,
+            autoCreateColumns: options.autoCreateColumns === true,
+            strict: options.strict === true,
+            convertTypes: options.convertTypes !== false,
+            validateSchema: options.validateSchema !== false,
+            ...options
+        };
+        const normalizedRows = DataTableLoader.normalizeRows(rows, opts);
+        const result = {
+            updatedRows: 0,
+            insertedRows: 0,
+            skippedRows: 0
+        };
+
+        if (opts.autoCreateColumns) {
+            this.loadRows([], {
+                ...opts,
+                columns: null,
+                clearBeforeLoad: false
+            });
+        }
+
+        for (const record of normalizedRows) {
+            for (const columnName of primaryKey) {
+                if (!Object.prototype.hasOwnProperty.call(record, columnName)) {
+                    throw new SchemaMismatchError(`Missing primary key column: "${columnName}"`);
+                }
+            }
+
+            const key = primaryKey.length === 1
+                ? record[primaryKey[0]]
+                : primaryKey.map(columnName => record[columnName]);
+            let existing = this.find(key);
+
+            if (existing) {
+                if (!opts.updateExisting) {
+                    result.skippedRows++;
+                    continue;
+                }
+
+                const before = cloneValues(existing._values);
+                for (const [columnName, value] of Object.entries(record)) {
+                    if (primaryKey.includes(columnName)) {
+                        continue;
+                    }
+                    if (!this.columnExists(columnName)) {
+                        if (opts.autoCreateColumns) {
+                            this.addColumn(columnName, 'any');
+                        } else if (opts.ignoreExtraColumns) {
+                            continue;
+                        } else {
+                            throw new SchemaMismatchError(`Column "${columnName}" does not exist in DataTable.`);
+                        }
+                    }
+                    existing.set(columnName, value);
+                }
+
+                if (opts.markModified) {
+                    if (existing.getRowState() === DataRowState.UNCHANGED) {
+                        existing._originalValues = before;
+                        existing._setRowState(DataRowState.MODIFIED);
+                    }
+                } else {
+                    existing._originalValues = cloneValues(existing._values);
+                    existing._setRowState(DataRowState.UNCHANGED);
+                }
+                result.updatedRows++;
+                continue;
+            }
+
+            if (!opts.addMissing) {
+                result.skippedRows++;
+                continue;
+            }
+
+            DataTableLoader.addRecord(this, record, {
+                ...opts,
+                recordAlreadyNormalized: true,
+                rowState: DataRowState.UNCHANGED,
+                preserveOriginalValues: true
+            });
+            result.insertedRows++;
+        }
+
+        return result;
     }
 
     /**
@@ -315,7 +448,11 @@ class DataTable {
                 readOnly: column.readOnly,
                 unique: column.unique,
                 ordinal: column.ordinal,
-                caption: column.caption
+                caption: column.caption,
+                isPrimaryKey: column.isPrimaryKey,
+                maxLength: column.maxLength,
+                sourceColumn: column.sourceColumn,
+                metadata: column.metadata
             });
 
             // Add primary key info
@@ -349,15 +486,19 @@ class DataTable {
 
         // Import columns
         for (const columnDef of schema.columns) {
-            const column = table.addColumn(columnDef.name, columnDef.dataType, {
+            const columnName = columnDef.name || columnDef.columnName;
+            const column = table.addColumn(columnName, columnDef.dataType || columnDef.type, {
                 allowNull: columnDef.allowNull !== undefined ? columnDef.allowNull : true,
                 defaultValue: columnDef.defaultValue,
                 expression: columnDef.expression,
                 readOnly: columnDef.readOnly || false,
                 unique: columnDef.unique || false,
-                caption: columnDef.caption || columnDef.name
+                caption: columnDef.caption || columnName,
+                maxLength: columnDef.maxLength,
+                sourceColumn: columnDef.sourceColumn,
+                metadata: columnDef.metadata
             });
-            column.caption = columnDef.caption || columnDef.name;
+            column.caption = columnDef.caption || columnName;
         }
         if (schema.primaryKey && schema.primaryKey.length > 0) {
             table.setPrimaryKey(schema.primaryKey);
@@ -660,7 +801,10 @@ class DataTable {
             expression: sourceColumn.expression,
             readOnly: sourceColumn.readOnly,
             unique: sourceColumn.unique,
-            caption: sourceColumn.caption
+            caption: sourceColumn.caption,
+            maxLength: sourceColumn.maxLength,
+            sourceColumn: sourceColumn.sourceColumn,
+            metadata: sourceColumn.metadata
         });
 
         column.caption = sourceColumn.caption;
@@ -708,6 +852,23 @@ class DataTable {
                 }
                 return num;
             }
+            case 'integer': {
+                const num = Number(value);
+                if (Number.isNaN(num) || !Number.isInteger(num)) {
+                    throw new TypeMismatchError(
+                        `Type mismatch for column '${column.columnName}': expected integer`
+                    );
+                }
+                return num;
+            }
+            case 'bigint':
+                try {
+                    return typeof value === 'bigint' ? value : BigInt(value);
+                } catch (_) {
+                    throw new TypeMismatchError(
+                        `Type mismatch for column '${column.columnName}': expected bigint`
+                    );
+                }
             case 'date': {
                 if (value instanceof Date) {
                     if (Number.isNaN(value.getTime())) {
@@ -728,7 +889,16 @@ class DataTable {
             case 'string':
                 return String(value);
             case 'boolean':
-                return typeof value === 'boolean' ? value : Boolean(value);
+                if (typeof value === 'boolean') return value;
+                if (typeof value === 'number') return value !== 0;
+                if (typeof value === 'string') {
+                    const lower = value.trim().toLowerCase();
+                    if (['true', '1', 'yes', 'y'].includes(lower)) return true;
+                    if (['false', '0', 'no', 'n'].includes(lower)) return false;
+                }
+                throw new TypeMismatchError(
+                    `Type mismatch for column '${column.columnName}': expected boolean`
+                );
             default:
                 return value;
         }
@@ -806,13 +976,88 @@ class DataTable {
         return DataTable.importSchema(schema);
     }
 
+    createView(options = {}) {
+        const view = new DataView(this);
+        if (options && options.filter !== undefined) {
+            view.filter(options.filter);
+        }
+        if (options && options.sort !== undefined) {
+            view.sort(options.sort);
+        }
+        return view;
+    }
+
+    get defaultView() {
+        return this.createView();
+    }
+
+    toObjects(options = {}) {
+        const {
+            includeDeleted = false,
+            includeRowState = false,
+            includeOriginalValues = false,
+            onlyChanged = false,
+            columnNameMapping = null,
+            dateMode = 'date',
+            bigIntMode = 'bigint'
+        } = options;
+
+        const rows = [];
+        for (const row of this.rows._rows) {
+            const state = row.getRowState();
+            if (!includeDeleted && state === DataRowState.DELETED) {
+                continue;
+            }
+            if (onlyChanged && !row.hasChanges()) {
+                continue;
+            }
+
+            const output = {};
+            for (const column of this.columns) {
+                const targetName = mapOutputColumnName(column.columnName, columnNameMapping);
+                output[targetName] = serializeOutputValue(row.get(column.columnName), dateMode, bigIntMode);
+            }
+
+            if (includeRowState) {
+                output.rowState = state;
+            }
+            if (includeOriginalValues) {
+                output.originalValues = {};
+                for (const column of this.columns) {
+                    const targetName = mapOutputColumnName(column.columnName, columnNameMapping);
+                    output.originalValues[targetName] = serializeOutputValue(row._originalValues[column.columnName], dateMode, bigIntMode);
+                }
+            }
+            rows.push(output);
+        }
+        return rows;
+    }
+
+    toJSON() {
+        return {
+            tableName: this.tableName,
+            columns: this.columns.toArray().map(column => ({
+                name: column.columnName,
+                dataType: column.dataType,
+                allowNull: column.allowNull,
+                primaryKey: column.isPrimaryKey,
+                unique: column.unique,
+                readOnly: column.readOnly,
+                maxLength: column.maxLength,
+                sourceColumn: column.sourceColumn
+            })),
+            rows: this.toObjects({ dateMode: 'iso-string', bigIntMode: 'string' })
+        };
+    }
+
     // ===== ROWSTATE MANAGEMENT METHODS =====
 
     /**
      * Accepts changes for all rows in the table
      */
     acceptAllChanges() {
-        for (const row of this.rows) {
+        const snapshot = [...this.rows._rows];
+        for (const row of snapshot) {
             if (row.hasChanges()) {
                 row.acceptChanges();
             }
@@ -843,8 +1088,12 @@ class DataTable {
      * Gets all rows that have changes
      * @returns {Array<DataRow>} Array of rows with changes
      */
-    getChanges() {
-        return this.rows._rows.filter(row => row.hasChanges());
+    getChanges(rowState = null) {
+        if (!rowState) {
+            return this.rows._rows.filter(row => row.hasChanges());
+        }
+        const normalized = normalizeRowState(rowState, null);
+        return this.rows._rows.filter(row => row.getRowState() === normalized);
     }
 
     /**
@@ -853,7 +1102,8 @@ class DataTable {
      * @returns {Array<DataRow>} Array of rows in the specified state
      */
     getRowsByState(state) {
-        return this.rows._rows.filter(row => row.getRowState() === state);
+        const normalized = normalizeRowState(state, state);
+        return this.rows._rows.filter(row => row.getRowState() === normalized);
     }
 
     /**
@@ -916,10 +1166,7 @@ class DataTable {
         for (const row of this.rows._rows) {
             if (row.getRowState() !== DataRowState.DELETED) {
                 row._setRowState(DataRowState.UNCHANGED);
-                // Clear original values tracking
-                if (row._originalValues) {
-                    row._originalValues = {};
-                }
+                row._originalValues = cloneValues(row._values);
             }
         }
     }
@@ -936,6 +1183,37 @@ class DataTable {
         return this.rows.find(key);
     }
 
+    findByPrimaryKey(key) {
+        return this.find(key);
+    }
+
+}
+
+function normalizePrimaryKey(primaryKey) {
+    if (!primaryKey) {
+        return [];
+    }
+    return Array.isArray(primaryKey) ? primaryKey : [primaryKey];
+}
+
+function mapOutputColumnName(columnName, mapping) {
+    if (typeof mapping === 'function') {
+        return mapping(columnName);
+    }
+    if (mapping && Object.prototype.hasOwnProperty.call(mapping, columnName)) {
+        return mapping[columnName];
+    }
+    return columnName;
+}
+
+function serializeOutputValue(value, dateMode, bigIntMode = 'bigint') {
+    if (value instanceof Date) {
+        return dateMode === 'iso-string' ? value.toISOString() : cloneValue(value);
+    }
+    if (typeof value === 'bigint') {
+        return bigIntMode === 'string' ? value.toString() : value;
+    }
+    return cloneValue(value);
 }
 
 module.exports = DataTable;

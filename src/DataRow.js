@@ -7,6 +7,7 @@ const {
     ReadOnlyColumnError,
     InvalidRowStateError
 } = require('./errors');
+const { cloneValues } = require('./utils/typeUtils');
 
 class DataRow {
     constructor(table, initialState = DataRowState.DETACHED) {
@@ -18,7 +19,7 @@ class DataRow {
         for (const column of table.columns) {
             this._values[column.columnName] = this._evaluateDefaultValue(column);
         }
-        this._originalValues = { ...this._values };
+        this._originalValues = cloneValues(this._values);
     }
 
     /**
@@ -77,6 +78,16 @@ class DataRow {
             throw new ConstraintViolationError(`Column '${columnName}' does not allow null values`);
         }
 
+        if (
+            column.maxLength !== null &&
+            column.maxLength !== undefined &&
+            coercedValue !== null &&
+            coercedValue !== undefined &&
+            String(coercedValue).length > column.maxLength
+        ) {
+            throw new ConstraintViolationError(`Column '${columnName}' exceeds maxLength ${column.maxLength}`);
+        }
+
         this._validateUniqueness(columnName, coercedValue);
         this._validatePrimaryKeyIfNeeded(columnName, coercedValue);
 
@@ -86,7 +97,7 @@ class DataRow {
         }
 
         if (this._rowState === DataRowState.UNCHANGED) {
-            this._originalValues = { ...this._values };
+            this._originalValues = cloneValues(this._values);
             this._rowState = DataRowState.MODIFIED;
         }
 
@@ -117,7 +128,7 @@ class DataRow {
             return;
         }
 
-        this._originalValues = { ...this._values };
+        this._originalValues = cloneValues(this._values);
         this._rowState = DataRowState.UNCHANGED;
     }
 
@@ -126,13 +137,13 @@ class DataRow {
      */
     rejectChanges() {
         if (this._rowState === DataRowState.MODIFIED) {
-            this._values = { ...this._originalValues };
+            this._values = cloneValues(this._originalValues);
             this._rowState = DataRowState.UNCHANGED;
             return;
         }
 
         if (this._rowState === DataRowState.DELETED) {
-            this._values = { ...this._originalValues };
+            this._values = cloneValues(this._originalValues);
             this._rowState = DataRowState.UNCHANGED;
             return;
         }
@@ -171,13 +182,25 @@ class DataRow {
             return;
         }
         if (this._rowState === DataRowState.UNCHANGED) {
-            this._originalValues = { ...this._values };
+            this._originalValues = cloneValues(this._values);
         }
         this._rowState = DataRowState.DELETED;
     }
 
     toObject() {
         return { ...this._values };
+    }
+
+    get rowState() {
+        return this._rowState;
+    }
+
+    get currentValues() {
+        return this._values;
+    }
+
+    get originalValues() {
+        return this._originalValues;
     }
 
     _setRowState(state) {
@@ -228,6 +251,23 @@ class DataRow {
                 }
                 return num;
             }
+            case "integer": {
+                const num = Number(value);
+                if (Number.isNaN(num) || !Number.isInteger(num)) {
+                    throw new TypeMismatchError(
+                        `Type mismatch for column '${column.columnName}': expected integer`
+                    );
+                }
+                return num;
+            }
+            case "bigint":
+                try {
+                    return typeof value === "bigint" ? value : BigInt(value);
+                } catch (_) {
+                    throw new TypeMismatchError(
+                        `Type mismatch for column '${column.columnName}': expected bigint`
+                    );
+                }
             case "date": {
                 if (value instanceof Date) {
                     if (Number.isNaN(value.getTime())) {
@@ -247,8 +287,47 @@ class DataRow {
             }
             case "string":
                 return String(value);
-            case "boolean":
-                return typeof value === "boolean" ? value : Boolean(value);
+            case "boolean": {
+                if (typeof value === "boolean") return value;
+                if (typeof value === "number") return value !== 0;
+                if (typeof value === "string") {
+                    const lower = value.trim().toLowerCase();
+                    if (["true", "1", "yes", "y"].includes(lower)) return true;
+                    if (["false", "0", "no", "n"].includes(lower)) return false;
+                }
+                throw new TypeMismatchError(
+                    `Type mismatch for column '${column.columnName}': expected boolean`
+                );
+            }
+            case "json":
+                if (typeof value === "string") {
+                    try {
+                        return JSON.parse(value);
+                    } catch (_) {
+                        throw new TypeMismatchError(
+                            `Type mismatch for column '${column.columnName}': expected json`
+                        );
+                    }
+                }
+                return value;
+            case "object":
+                if (value && typeof value === "object" && !Array.isArray(value)) return value;
+                throw new TypeMismatchError(
+                    `Type mismatch for column '${column.columnName}': expected object`
+                );
+            case "array":
+                if (Array.isArray(value)) return value;
+                throw new TypeMismatchError(
+                    `Type mismatch for column '${column.columnName}': expected array`
+                );
+            case "buffer":
+                if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) return value;
+                if (typeof Buffer !== "undefined") return Buffer.from(value);
+                return value;
+            case "any":
+            case "null":
+            case "undefined":
+                return value;
             default:
                 return value;
         }

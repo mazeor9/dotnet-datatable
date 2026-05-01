@@ -9,6 +9,16 @@ class DataSet {
         this.relations = [];
     }
 
+    static fromRecordsets(recordsets, options = {}) {
+        const DataSetLoader = require('./mapping/DataSetLoader');
+        return DataSetLoader.fromRecordsets(recordsets, options);
+    }
+
+    static fromQueryResult(queryResult, options = {}) {
+        const DataSetLoader = require('./mapping/DataSetLoader');
+        return DataSetLoader.fromQueryResult(queryResult, options);
+    }
+
     /**
      * @param {string|DataTable} tableNameOrTable - Name of the table to create or DataTable instance to add
      * @returns {DataTable} The added table
@@ -127,6 +137,14 @@ class DataSet {
         );
     }
 
+    getRelation(relationName) {
+        const relation = this.relations.find(rel => rel.relationName === relationName);
+        if (!relation) {
+            throw new Error(`Relation '${relationName}' does not exist`);
+        }
+        return relation;
+    }
+
     /**
      * Get child rows for a parent row
      * @param {DataRow} parentRow - Parent row
@@ -134,17 +152,7 @@ class DataSet {
      * @returns {Array<DataRow>} Array of child rows
      */
     getChildRows(parentRow, relationName) {
-        const relation = this.relations.find(rel => rel.relationName === relationName);
-        if (!relation) {
-            throw new Error(`Relation '${relationName}' does not exist`);
-        }
-        
-        const parentValue = parentRow.get(relation.parentColumn.columnName);
-        const childTable = relation.childTable;
-        
-        return childTable.findRows(row => 
-            row.get(relation.childColumn.columnName) === parentValue
-        );
+        return this.getRelation(relationName).getChildRows(parentRow);
     }
 
     /**
@@ -154,17 +162,7 @@ class DataSet {
      * @returns {DataRow} Parent row
      */
     getParentRow(childRow, relationName) {
-        const relation = this.relations.find(rel => rel.relationName === relationName);
-        if (!relation) {
-            throw new Error(`Relation '${relationName}' does not exist`);
-        }
-        
-        const childValue = childRow.get(relation.childColumn.columnName);
-        const parentTable = relation.parentTable;
-        
-        return parentTable.findOne(row => 
-            row.get(relation.parentColumn.columnName) === childValue
-        );
+        return this.getRelation(relationName).getParentRow(childRow);
     }
 
     /**

@@ -27,6 +27,9 @@ class DataColumn {
         this.readOnly = options.readOnly ?? false;
         this.unique = options.unique ?? false;
         this.isPrimaryKey = options.primaryKey ?? options.isPrimaryKey ?? false;
+        this.maxLength = options.maxLength ?? null;
+        this.sourceColumn = options.sourceColumn ?? null;
+        this.metadata = options.metadata ?? null;
         this._table = null;
 
         if (this.isPrimaryKey) {

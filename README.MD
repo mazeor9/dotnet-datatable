@@ -1,6 +1,6 @@
 # dotnet-datatable
 
-A .NET-style DataTable library for JavaScript and Node.js. Build typed in-memory tables with DataRow access, DataView filtering and sorting, DataSet relationships, row state tracking, schema validation, merge operations and SQL-friendly data loading.
+A .NET-style DataTable library for JavaScript and Node.js. Build typed in-memory tables with DataRow access, DataView filtering and sorting, DataSet relationships, row state tracking, schema validation, merge operations and query result mapping from any database client.
 
 <div align="center">
   <p>
@@ -31,8 +31,9 @@ A .NET-style DataTable library for JavaScript and Node.js. Build typed in-memory
 - Row management
 - Sorting and filtering
 - Data validation
-- Query result loading
-- Database integration
+- Query result loading from plain objects and common SQL client result shapes
+- Database result mapping without database drivers or connections
+- Schema inference and original value tracking
 - Enterprise-style merge for DataTable and DataSet
 
 ## Table of Contents
@@ -48,6 +49,7 @@ A .NET-style DataTable library for JavaScript and Node.js. Build typed in-memory
   - [Row Operations](#row-operations)
   - [Row State Management](#row-state-management)
   - [Data Operations](#data-operations)
+  - [Query Result Loading](#query-result-loading)
   - [Merge Operations](#merge-operations)
   - [Advanced Filtering](#advanced-filtering-criteria)
   - [Column Operations](#column-operations)
@@ -115,35 +117,43 @@ const dt = new DataTable('Users');
 ```
 
 ## Database Integration
-The library seamlessly integrates with any database query results. You can directly load data from:
-- PostgreSQL
-- MySQL
-- SQLite
-- SQL Server
-- Any other database that returns query results as objects
+`dotnet-datatable` does not connect to databases, execute SQL, or act as an ORM. Use any external client to run your query, then load the returned rows or query result object into a DataTable.
 
-Example with different databases:
+Supported input shapes include:
+- Plain arrays of objects, such as Prisma, Knex, SQLite and Drizzle results
+- PostgreSQL `pg` results: `{ rows: [...], fields: [...] }`
+- MySQL `mysql2` results: `[rows, fields]`
+- SQL Server `mssql` results: `{ recordset: [...], recordsets: [...] }`
+- Sequelize model instances or plain objects
+- Custom wrappers with `rowsPath`, such as `{ data: { items: [...] } }`
 
 ```javascript
 // PostgreSQL
 const { Pool } = require('pg');
 const pool = new Pool(config);
-const dt = new DataTable('Products');
 
 const result = await pool.query('SELECT * FROM products');
-dt.loadFromQuery(result.rows);
+const products = DataTable.fromQueryResult(result, {
+    tableName: 'Products',
+    primaryKey: 'id',
+    useFieldMetadata: true
+});
 
 // MySQL
 const mysql = require('mysql2/promise');
 const connection = await mysql.createConnection(config);
-const [rows] = await connection.execute('SELECT * FROM products');
-dt.loadFromQuery(rows);
+const mysqlResult = await connection.execute('SELECT * FROM products');
 
-// SQLite
-const sqlite3 = require('sqlite3');
-const db = new sqlite3.Database('mydb.sqlite');
-db.all('SELECT * FROM products', [], (err, rows) => {
-    dt.loadFromQuery(rows);
+const mysqlProducts = DataTable.fromQueryResult(mysqlResult, {
+    tableName: 'Products',
+    primaryKey: 'id'
+});
+
+// Prisma, Knex, SQLite, Drizzle or any plain object rows
+const rows = await prisma.product.findMany();
+const prismaProducts = DataTable.fromObjects(rows, {
+    tableName: 'Products',
+    primaryKey: 'id'
 });
 ```
 
@@ -271,6 +281,8 @@ dotnet-datatable provides comprehensive row state tracking to monitor changes to
 - `DELETED`: Row marked for deletion
 - `UNCHANGED`: Row with no pending changes
 
+Rows loaded with `DataTable.fromObjects()`, `fromRows()`, `fromQueryResult()` or `loadRows()` are initialized as `UNCHANGED` by default and keep a copy of their original values.
+
 #### Individual Row State Operations
 ```javascript
 // Check row state
@@ -323,6 +335,9 @@ dt.rejectChanges();
 // Get all rows with changes
 const changedRows = dt.getChanges();
 console.log(`${changedRows.length} rows have changes`);
+
+// Get changed rows by state
+const onlyModified = dt.getChanges('MODIFIED');
 
 // Get rows by specific state
 const addedRows = dt.getRowsByState('ADDED');
@@ -460,6 +475,81 @@ const johns = dt.findRows({ name: 'John' });
 const over25 = dt.findRows(row => row.get('age') > 25);
 ```
 
+### Query Result Loading
+
+Use `fromObjects`, `fromRows`, `fromRecords` or `fromQueryResult` to import data that was already fetched by another library. Imported rows are marked as `UNCHANGED` and their `originalValues` are populated, so later edits are tracked as `MODIFIED`.
+
+```javascript
+const users = DataTable.fromObjects([
+    { id: 1, name: 'Mario', active: true },
+    { id: 2, name: 'Luca', active: false }
+], {
+    tableName: 'Users',
+    primaryKey: 'id'
+});
+
+users.rows[0].set('name', 'Mario Rossi');
+console.log(users.rows[0].getRowState()); // 'MODIFIED'
+console.log(users.rows[0].originalValues.name); // 'Mario'
+```
+
+Query result shape detection:
+
+```javascript
+const pgTable = DataTable.fromQueryResult(pgResult, {
+    tableName: 'Users',
+    primaryKey: 'id',
+    useFieldMetadata: true
+});
+
+const mysqlTable = DataTable.fromQueryResult(mysqlResult, {
+    tableName: 'Users',
+    primaryKey: 'id'
+});
+
+const customTable = DataTable.fromQueryResult(apiResult, {
+    rowsPath: 'data.items',
+    tableName: 'Users'
+});
+```
+
+Loading into an existing table:
+
+```javascript
+const table = new DataTable('Users');
+table.addColumn('id', 'number', { primaryKey: true });
+table.addColumn('name', 'string');
+
+table.loadRows(rows, {
+    clearBeforeLoad: true,
+    autoCreateColumns: false,
+    validateSchema: true,
+    convertTypes: true
+});
+```
+
+Common loading options:
+
+```javascript
+{
+    tableName: 'Users',
+    primaryKey: 'id',
+    columns: {},
+    includeColumns: [],
+    excludeColumns: [],
+    renameColumns: { user_id: 'id' },
+    columnNameTransform: 'camelCase',
+    inferSchema: true,
+    useFieldMetadata: true,
+    autoCreateColumns: true,
+    validateSchema: true,
+    convertTypes: true,
+    rowState: 'UNCHANGED',
+    preserveOriginalValues: true,
+    strict: false
+}
+```
+
 ### Merge Operations
 `DataTable.merge()` imports rows from another table with the same table name and a compatible schema. Rows are matched by primary key, updated when found, and inserted when missing. If no primary key is configured, source rows are appended.
 
@@ -518,6 +608,20 @@ const summary = company.merge(incoming, {
   preserveChanges: true,
   missingSchemaAction: 'add'
 });
+```
+
+For database refresh scenarios where you already have plain rows, use `mergeRows()`:
+
+```javascript
+const result = users.mergeRows(freshRows, {
+  primaryKey: 'id',
+  updateExisting: true,
+  addMissing: true,
+  markModified: false
+});
+
+console.log(result.updatedRows);
+console.log(result.insertedRows);
 ```
 
 ### Advanced Filtering Criteria
@@ -589,33 +693,41 @@ dt.sortBy(row => row.get('age') + row.get('name'));
 ```
 
 #### Loading Data from Database
+The package receives data that was already fetched by your database client. It does not create connections or execute queries.
+
 ```javascript
 // PostgreSQL example
 const { Pool } = require('pg');
 const pool = new Pool(config);
-const dt = new DataTable('Products');
 
-// Direct loading from query results
 const result = await pool.query('SELECT * FROM products WHERE category = $1', ['electronics']);
-dt.loadFromQuery(result.rows);
+const products = DataTable.fromQueryResult(result, {
+    tableName: 'Products',
+    primaryKey: 'id',
+    useFieldMetadata: true
+});
 
 // MySQL example
 const mysql = require('mysql2/promise');
 const connection = await mysql.createConnection(config);
-const [rows] = await connection.execute('SELECT * FROM products WHERE price > ?', [100]);
-dt.loadFromQuery(rows);
+const mysqlResult = await connection.execute('SELECT * FROM products WHERE price > ?', [100]);
+const mysqlProducts = DataTable.fromQueryResult(mysqlResult, {
+    tableName: 'Products',
+    primaryKey: 'id'
+});
 
-// Using async version
-await dt.loadFromQueryAsync(
-    pool.query('SELECT * FROM products').then(result => result.rows)
-);
+// Loading into an existing table is also supported
+const dt = new DataTable('Products');
+dt.addColumn('id', 'number', { primaryKey: true });
+dt.addColumn('name', 'string');
+dt.loadRows(result.rows, { clearBeforeLoad: true });
 
 // Load from array of objects
 const data = [
     { id: 1, name: 'John' },
     { id: 2, name: 'Jane' }
 ];
-dt.loadFromQuery(data);
+const users = DataTable.fromRows(data, { tableName: 'Users', primaryKey: 'id' });
 ```
 
 ### Column Operations
@@ -684,6 +796,30 @@ const johnsDept = ds.getParentRow(john, 'EmpDeptRelation');
 console.log(johnsDept.get('name')); // 'IT'
 ```
 
+You can also build a DataSet directly from multiple query result arrays or SQL Server-style recordsets:
+
+```javascript
+const ds = DataSet.fromRecordsets([
+    usersRows,
+    ordersRows
+], {
+    tableNames: ['Users', 'Orders'],
+    relations: [
+        {
+            name: 'UserOrders',
+            parentTable: 'Users',
+            parentColumn: 'id',
+            childTable: 'Orders',
+            childColumn: 'user_id'
+        }
+    ]
+});
+
+const relation = ds.getRelation('UserOrders');
+const orders = relation.getChildRows(userRow);
+const user = relation.getParentRow(orderRow);
+```
+
 ### DataView Operations
 DataView provides a filtered and sorted view of a DataTable.
 ```javascript
@@ -731,6 +867,24 @@ const activeUsersTable = activeUsersView.toTable();
 
 // Get view data as array of objects
 const activeUsersArray = activeUsersView.toArray();
+```
+
+The fluent API is also available:
+
+```javascript
+const activeAdults = users
+    .createView()
+    .where('active', '=', true)
+    .where('age', '>', 18)
+    .orderBy('name', 'asc')
+    .skip(20)
+    .take(10)
+    .toObjects();
+
+const quickView = users.createView({
+    filter: "age >= 18 AND active = true",
+    sort: 'name ASC'
+});
 ```
 
 ### Advanced Schema Management
@@ -856,21 +1010,37 @@ This is especially useful for:
 ## Supported Data Types
 * string
 * number
+* integer
 * date
 * boolean
+* object
+* array
+* json
+* bigint
+* buffer
+* any
 
 ## Advanced Database Usage
-The DataTable automatically creates columns based on the database query results, matching the types from your database:
-- INTEGER/BIGINT → number
-- VARCHAR/TEXT → string
-- TIMESTAMP/DATE → date
-- BOOLEAN → boolean
+The DataTable automatically creates columns based on query result rows and, when available, field metadata. This is best-effort mapping and does not require any database package dependency:
+
+- PostgreSQL `int2/int4` -> integer, `int8` -> bigint, `numeric/float` -> number, `varchar/text` -> string, `bool` -> boolean, `timestamp/date` -> date, `json/jsonb` -> json, `bytea` -> buffer
+- MySQL `INT` -> integer, `BIGINT` -> bigint, `DECIMAL/FLOAT/DOUBLE` -> number, `VARCHAR/TEXT` -> string, `DATE/DATETIME/TIMESTAMP` -> date, `TINYINT(1)` -> boolean, `JSON` -> json, `BLOB` -> buffer
+- SQL Server `int/smallint/tinyint` -> integer, `bigint` -> bigint, `decimal/numeric/float/real/money` -> number, `varchar/nvarchar/text` -> string, `bit` -> boolean, `date/datetime/datetime2` -> date, `varbinary` -> buffer
+- SQLite `INTEGER` -> integer, `REAL` -> number, `TEXT` -> string, `BLOB` -> buffer
 
 This makes it perfect for scenarios where you need to:
 - Cache database results
 - Manipulate query results before display
 - Create temporary data structures from database queries
 - Transform data before sending to the frontend
+
+Limitations:
+
+- The package does not connect to databases.
+- The package does not execute SQL queries.
+- The package is not an ORM.
+- It does not replace Prisma, Sequelize, TypeORM, Drizzle or Knex.
+- Complex SQL-like DataView filter strings are intentionally limited.
 
 ## Error Handling
 The library throws errors for:
