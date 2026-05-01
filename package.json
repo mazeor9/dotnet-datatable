@@ -1,7 +1,7 @@
 {
   "name": "dotnet-datatable",
-  "version": "1.1.0",
-  "description": "A JavaScript DataTable library with type validation, filtering, sorting and SQL database integration. Inspired by .NET's DataTable.",
+  "version": "1.2.0",
+  "description": ".NET-style DataTable, DataRow, DataView and DataSet for JavaScript/Node.js with typed columns, row states, filtering, sorting and schema validation.",
   "main": "src/index.js",
   "style": "css/aspnetcore-bootstrap5.css",
   "exports": {
@@ -21,35 +21,40 @@
     "./css/blazor-fluentui.css": "./css/blazor-fluentui.css"
   },
   "scripts": {
-    "test": "node -e \"console.log('No tests configured')\""
+    "test": "node --test __tests__/test.js"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/mazeor9/dotnet-datatable"
   },
+  "homepage": "https://github.com/mazeor9/dotnet-datatable#readme",
+  "bugs": {
+    "url": "https://github.com/mazeor9/dotnet-datatable/issues"
+  },
   "keywords": [
+    "dotnet",
+    ".net",
+    "ado.net",
     "datatable",
     "data-table",
-    "database",
-    "postgresql",
-    "mysql",
-    "sqlite",
-    "data-validation",
-    "schema",
-    "dataset",
+    "datarow",
     "dataview",
-    "dotnet",
+    "dataset",
+    "datarelation",
+    "rowstate",
     "row-state",
-    "datagrid",
-    "dataview",
-    "dataset",
-    "gridview",
-    "dotnet",
-    "ado.net",
-    "table",
-    "grid",
-    "rows",
-    "columns"
+    "schema",
+    "typed-columns",
+    "data-validation",
+    "in-memory-database",
+    "nodejs",
+    "javascript",
+    "sql",
+    "database",
+    "aspnet",
+    "asp.net",
+    "webforms",
+    "gridview"
   ],
   "author": "mazeor",
   "license": "MIT"

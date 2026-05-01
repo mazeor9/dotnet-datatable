@@ -1,5 +1,6 @@
 const DataTable = require('./DataTable');
 const DataRelation = require('./DataRelation');
+const { SchemaMismatchError } = require('./errors');
 
 class DataSet {
     constructor(dataSetName = '') {
@@ -173,6 +174,127 @@ class DataSet {
         for (const table of this.tables.values()) {
             table.clear();
         }
+    }
+
+    /**
+     * Merges another DataSet, or a single DataTable, into this DataSet.
+     * Existing tables are merged by table name; missing tables follow missingSchemaAction.
+     * @param {DataSet|DataTable} source - Source dataset or table
+     * @param {Object} [options] - Merge options passed to DataTable.merge()
+     * @returns {Object} Merge summary
+     */
+    merge(source, options = {}) {
+        const mergeOptions = this._normalizeMergeOptions(options);
+        const result = {
+            dataSetName: this.dataSetName,
+            mergedTables: [],
+            addedTables: [],
+            ignoredTables: [],
+            relationsAdded: []
+        };
+
+        if (source instanceof DataTable) {
+            this._mergeSourceTable(source, mergeOptions, result);
+            return result;
+        }
+
+        if (!(source instanceof DataSet)) {
+            throw new SchemaMismatchError('DataSet.merge() expects a DataSet or DataTable source');
+        }
+
+        for (const sourceTable of source.tables.values()) {
+            this._mergeSourceTable(sourceTable, mergeOptions, result);
+        }
+
+        if (mergeOptions.missingSchemaAction === 'add') {
+            this._mergeRelationsFrom(source, result);
+        }
+
+        return result;
+    }
+
+    _normalizeMergeOptions(options) {
+        const opts = options || {};
+        const missingSchemaAction = String(opts.missingSchemaAction || 'error').toLowerCase();
+        const allowedActions = ['add', 'ignore', 'error'];
+
+        if (!allowedActions.includes(missingSchemaAction)) {
+            throw new SchemaMismatchError(
+                `Invalid missingSchemaAction '${opts.missingSchemaAction}'. Expected: ${allowedActions.join(', ')}`
+            );
+        }
+
+        return {
+            preserveChanges: opts.preserveChanges === true,
+            missingSchemaAction
+        };
+    }
+
+    _mergeSourceTable(sourceTable, mergeOptions, result) {
+        if (this.hasTable(sourceTable.tableName)) {
+            const mergeResult = this.table(sourceTable.tableName).merge(sourceTable, mergeOptions);
+            result.mergedTables.push({
+                tableName: sourceTable.tableName,
+                result: mergeResult
+            });
+            return;
+        }
+
+        if (mergeOptions.missingSchemaAction === 'add') {
+            this.addTable(sourceTable.clone());
+            result.addedTables.push(sourceTable.tableName);
+            return;
+        }
+
+        if (mergeOptions.missingSchemaAction === 'ignore') {
+            result.ignoredTables.push(sourceTable.tableName);
+            return;
+        }
+
+        throw new SchemaMismatchError(
+            `Table '${sourceTable.tableName}' does not exist in the DataSet`
+        );
+    }
+
+    _mergeRelationsFrom(sourceDataSet, result) {
+        for (const relation of sourceDataSet.relations) {
+            const existing = this.relations.find((rel) => rel.relationName === relation.relationName);
+            if (existing) {
+                if (!this._isSameRelation(existing, relation)) {
+                    throw new SchemaMismatchError(`Relation '${relation.relationName}' already exists with a different definition`);
+                }
+                continue;
+            }
+
+            const parentTableName = relation.parentTable.tableName;
+            const childTableName = relation.childTable.tableName;
+            const parentColumnName = relation.parentColumn.columnName;
+            const childColumnName = relation.childColumn.columnName;
+
+            if (!this.hasTable(parentTableName) || !this.hasTable(childTableName)) {
+                continue;
+            }
+
+            const parentTable = this.table(parentTableName);
+            const childTable = this.table(childTableName);
+            if (!parentTable.columnExists(parentColumnName) || !childTable.columnExists(childColumnName)) {
+                continue;
+            }
+
+            this.addRelation(
+                relation.relationName,
+                parentTable.columns.get(parentColumnName),
+                childTable.columns.get(childColumnName)
+            );
+            result.relationsAdded.push(relation.relationName);
+        }
+    }
+
+    _isSameRelation(targetRelation, sourceRelation) {
+        return targetRelation.parentTable.tableName === sourceRelation.parentTable.tableName &&
+            targetRelation.childTable.tableName === sourceRelation.childTable.tableName &&
+            targetRelation.parentColumn.columnName === sourceRelation.parentColumn.columnName &&
+            targetRelation.childColumn.columnName === sourceRelation.childColumn.columnName;
     }
 
     /**

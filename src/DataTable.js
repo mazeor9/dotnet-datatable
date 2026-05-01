@@ -3,6 +3,11 @@ const DataRowCollection = require('./collections/DataRowCollection');
 const DataColumn = require('./DataColumn');
 const DataRow = require('./DataRow');
 const DataRowState = require('./enums/DataRowState');
+const {
+    ConstraintViolationError,
+    SchemaMismatchError,
+    TypeMismatchError
+} = require('./errors');
 
 class DataTable {
     /**
@@ -477,6 +482,310 @@ class DataTable {
         }
 
         return result;
+    }
+
+    /**
+     * Merges rows and, optionally, schema from another DataTable into this table.
+     * Existing rows are matched by primary key. Without a primary key, source rows are appended.
+     * @param {DataTable} sourceTable - Source table to merge from
+     * @param {Object} [options] - Merge options
+     * @param {boolean} [options.preserveChanges=false] - Preserve local row/column changes
+     * @param {'add'|'ignore'|'error'} [options.missingSchemaAction='error'] - How to handle source columns missing in this table
+     * @returns {Object} Merge summary
+     */
+    merge(sourceTable, options = {}) {
+        this._ensureMergeSource(sourceTable);
+
+        const mergeOptions = this._normalizeMergeOptions(options);
+        const result = {
+            tableName: this.tableName,
+            addedColumns: [],
+            ignoredColumns: [],
+            updatedRows: 0,
+            insertedRows: 0,
+            preservedRows: 0,
+            skippedRows: 0,
+            primaryKeyAdded: null
+        };
+
+        const sourceColumns = this._prepareMergeSchema(
+            sourceTable,
+            mergeOptions.missingSchemaAction,
+            result
+        );
+        const primaryKey = this._prepareMergePrimaryKey(
+            sourceTable,
+            mergeOptions.missingSchemaAction,
+            result
+        );
+        const mergeColumns = sourceColumns.filter((column) => this.columnExists(column.columnName));
+
+        for (const sourceRow of sourceTable.rows) {
+            if (typeof sourceRow.getRowState === 'function' && sourceRow.getRowState() === DataRowState.DELETED) {
+                result.skippedRows++;
+                continue;
+            }
+
+            const targetRow = primaryKey.length > 0
+                ? this._findMergeTargetRow(sourceRow, primaryKey)
+                : null;
+
+            if (targetRow) {
+                const outcome = this._mergeExistingRow(
+                    targetRow,
+                    sourceRow,
+                    mergeColumns,
+                    primaryKey,
+                    mergeOptions.preserveChanges
+                );
+
+                if (outcome.updated) {
+                    result.updatedRows++;
+                } else if (outcome.preserved) {
+                    result.preservedRows++;
+                } else {
+                    result.skippedRows++;
+                }
+                continue;
+            }
+
+            this.addRow(this._createMergedRowValues(sourceRow, mergeColumns));
+            result.insertedRows++;
+        }
+
+        return result;
+    }
+
+    _ensureMergeSource(sourceTable) {
+        if (!(sourceTable instanceof DataTable)) {
+            throw new SchemaMismatchError('DataTable.merge() expects a DataTable source');
+        }
+
+        if (this.tableName && sourceTable.tableName && this.tableName !== sourceTable.tableName) {
+            throw new SchemaMismatchError(
+                `Cannot merge table '${sourceTable.tableName}' into '${this.tableName}'`
+            );
+        }
+    }
+
+    _normalizeMergeOptions(options) {
+        const opts = options || {};
+        const missingSchemaAction = String(opts.missingSchemaAction || 'error').toLowerCase();
+        const allowedActions = ['add', 'ignore', 'error'];
+
+        if (!allowedActions.includes(missingSchemaAction)) {
+            throw new SchemaMismatchError(
+                `Invalid missingSchemaAction '${opts.missingSchemaAction}'. Expected: ${allowedActions.join(', ')}`
+            );
+        }
+
+        return {
+            preserveChanges: opts.preserveChanges === true,
+            missingSchemaAction
+        };
+    }
+
+    _prepareMergeSchema(sourceTable, missingSchemaAction, result) {
+        const sourceColumns = sourceTable.columns.toArray();
+
+        for (const sourceColumn of sourceColumns) {
+            if (!this.columnExists(sourceColumn.columnName)) {
+                if (missingSchemaAction === 'add') {
+                    this._addColumnFrom(sourceColumn);
+                    result.addedColumns.push(sourceColumn.columnName);
+                } else if (missingSchemaAction === 'ignore') {
+                    result.ignoredColumns.push(sourceColumn.columnName);
+                } else {
+                    throw new SchemaMismatchError(
+                        `Column '${sourceColumn.columnName}' does not exist in target table '${this.tableName}'`
+                    );
+                }
+                continue;
+            }
+
+            const targetColumn = this.columns.get(sourceColumn.columnName);
+            if (!this._areMergeTypesCompatible(targetColumn.dataType, sourceColumn.dataType)) {
+                throw new SchemaMismatchError(
+                    `Column '${sourceColumn.columnName}' type mismatch: target '${targetColumn.dataType}', source '${sourceColumn.dataType}'`
+                );
+            }
+        }
+
+        return sourceColumns;
+    }
+
+    _prepareMergePrimaryKey(sourceTable, missingSchemaAction, result) {
+        let targetPrimaryKey = this.getPrimaryKey();
+        const sourcePrimaryKey = sourceTable.getPrimaryKey();
+
+        if (
+            targetPrimaryKey.length > 0 &&
+            sourcePrimaryKey.length > 0 &&
+            !this._arePrimaryKeysEqual(targetPrimaryKey, sourcePrimaryKey)
+        ) {
+            throw new SchemaMismatchError(
+                `Primary key mismatch: target '${targetPrimaryKey.join(',')}', source '${sourcePrimaryKey.join(',')}'`
+            );
+        }
+
+        if (targetPrimaryKey.length === 0 && sourcePrimaryKey.length > 0 && missingSchemaAction === 'add') {
+            const missingKeyColumns = sourcePrimaryKey.filter((columnName) => !this.columnExists(columnName));
+            if (missingKeyColumns.length > 0) {
+                throw new SchemaMismatchError(
+                    `Cannot add primary key because columns are missing: ${missingKeyColumns.join(', ')}`
+                );
+            }
+
+            this.setPrimaryKey(sourcePrimaryKey);
+            targetPrimaryKey = this.getPrimaryKey();
+            result.primaryKeyAdded = [...targetPrimaryKey];
+        }
+
+        if (targetPrimaryKey.length > 0) {
+            const missingInSource = targetPrimaryKey.filter((columnName) => !sourceTable.columnExists(columnName));
+            if (missingInSource.length > 0) {
+                throw new SchemaMismatchError(
+                    `Source table '${sourceTable.tableName}' is missing primary key columns: ${missingInSource.join(', ')}`
+                );
+            }
+        }
+
+        return targetPrimaryKey;
+    }
+
+    _addColumnFrom(sourceColumn) {
+        const column = this.addColumn(sourceColumn.columnName, sourceColumn.dataType, {
+            allowNull: sourceColumn.allowNull,
+            defaultValue: sourceColumn.defaultValue,
+            expression: sourceColumn.expression,
+            readOnly: sourceColumn.readOnly,
+            unique: sourceColumn.unique,
+            caption: sourceColumn.caption
+        });
+
+        column.caption = sourceColumn.caption;
+        return column;
+    }
+
+    _areMergeTypesCompatible(targetType, sourceType) {
+        if (targetType === null || targetType === undefined || sourceType === null || sourceType === undefined) {
+            return true;
+        }
+        return String(targetType).toLowerCase() === String(sourceType).toLowerCase();
+    }
+
+    _arePrimaryKeysEqual(targetPrimaryKey, sourcePrimaryKey) {
+        return targetPrimaryKey.length === sourcePrimaryKey.length &&
+            targetPrimaryKey.every((columnName, index) => columnName === sourcePrimaryKey[index]);
+    }
+
+    _findMergeTargetRow(sourceRow, primaryKey) {
+        const keyValues = primaryKey.map((columnName) => {
+            const value = sourceRow.get(columnName);
+            if (value === null || value === undefined) {
+                throw new ConstraintViolationError(
+                    `Primary key '${primaryKey.join(',')}' cannot contain null values`
+                );
+            }
+            return this._coerceMergeValue(this.columns.get(columnName), value);
+        });
+
+        return this.find(primaryKey.length === 1 ? keyValues[0] : keyValues);
+    }
+
+    _coerceMergeValue(column, value) {
+        if (value === null || value === undefined || !column.dataType) {
+            return value;
+        }
+
+        switch (String(column.dataType).toLowerCase()) {
+            case 'number': {
+                const num = Number(value);
+                if (Number.isNaN(num)) {
+                    throw new TypeMismatchError(
+                        `Type mismatch for column '${column.columnName}': expected number`
+                    );
+                }
+                return num;
+            }
+            case 'date': {
+                if (value instanceof Date) {
+                    if (Number.isNaN(value.getTime())) {
+                        throw new TypeMismatchError(
+                            `Type mismatch for column '${column.columnName}': invalid date`
+                        );
+                    }
+                    return value;
+                }
+                const date = new Date(value);
+                if (Number.isNaN(date.getTime())) {
+                    throw new TypeMismatchError(
+                        `Type mismatch for column '${column.columnName}': expected date`
+                    );
+                }
+                return date;
+            }
+            case 'string':
+                return String(value);
+            case 'boolean':
+                return typeof value === 'boolean' ? value : Boolean(value);
+            default:
+                return value;
+        }
+    }
+
+    _mergeExistingRow(targetRow, sourceRow, mergeColumns, primaryKey, preserveChanges) {
+        let updated = false;
+        let preserved = false;
+        const primaryKeyColumns = new Set(primaryKey);
+
+        for (const sourceColumn of mergeColumns) {
+            const columnName = sourceColumn.columnName;
+            if (primaryKeyColumns.has(columnName)) {
+                continue;
+            }
+
+            if (this._shouldPreserveColumn(targetRow, columnName, preserveChanges)) {
+                preserved = true;
+                continue;
+            }
+
+            const before = targetRow.get(columnName);
+            targetRow.set(columnName, sourceRow.get(columnName));
+            const after = targetRow.get(columnName);
+            if (!targetRow._areEqual(before, after)) {
+                updated = true;
+            }
+        }
+
+        return { updated, preserved };
+    }
+
+    _shouldPreserveColumn(targetRow, columnName, preserveChanges) {
+        if (!preserveChanges) {
+            return false;
+        }
+
+        const state = targetRow.getRowState();
+        if (state === DataRowState.ADDED || state === DataRowState.DELETED) {
+            return true;
+        }
+        if (state !== DataRowState.MODIFIED) {
+            return false;
+        }
+        if (!Object.prototype.hasOwnProperty.call(targetRow._originalValues || {}, columnName)) {
+            return false;
+        }
+
+        return !targetRow._areEqual(targetRow.get(columnName), targetRow._originalValues[columnName]);
+    }
+
+    _createMergedRowValues(sourceRow, mergeColumns) {
+        const values = {};
+        for (const sourceColumn of mergeColumns) {
+            values[sourceColumn.columnName] = sourceRow.get(sourceColumn.columnName);
+        }
+        return values;
     }
 
     /**

@@ -1,6 +1,6 @@
 # dotnet-datatable
 
-A lightweight and flexible package for managing tabular data with features similar to .NET's DataTable. This package provides an efficient way to handle structured data with support for typed columns, data validation, sorting, and filtering. It can be used with any SQL database like PostgreSQL, MySQL, SQLite, or SQL Server.
+A .NET-style DataTable library for JavaScript and Node.js. Build typed in-memory tables with DataRow access, DataView filtering and sorting, DataSet relationships, row state tracking, schema validation, merge operations and SQL-friendly data loading.
 
 <div align="center">
   <p>
@@ -33,9 +33,11 @@ A lightweight and flexible package for managing tabular data with features simil
 - Data validation
 - Query result loading
 - Database integration
+- Enterprise-style merge for DataTable and DataSet
 
 ## Table of Contents
 
+- [Why dotnet-datatable?](#why-dotnet-datatable)
 - [Installation](#installation)
 - [CSS Themes](#css-themes)
 - [Basic Usage](#basic-usage)
@@ -46,6 +48,7 @@ A lightweight and flexible package for managing tabular data with features simil
   - [Row Operations](#row-operations)
   - [Row State Management](#row-state-management)
   - [Data Operations](#data-operations)
+  - [Merge Operations](#merge-operations)
   - [Advanced Filtering](#advanced-filtering-criteria)
   - [Column Operations](#column-operations)
   - [Table Manipulation](#table-manipulation)
@@ -152,6 +155,7 @@ db.all('SELECT * FROM products', [], (err, rows) => {
 - Data validation
 - Query result loading
 - Database integration
+- Enterprise-style merge for DataTable and DataSet
 - DataSet support for related tables 
 - DataView for filtered views of tables
 - Advanced schema management and serialization
@@ -454,6 +458,66 @@ const activeUsers = dt.select(row => row.age > 25 && row.active === true);
 // Using findRows - using get() method
 const johns = dt.findRows({ name: 'John' });
 const over25 = dt.findRows(row => row.get('age') > 25);
+```
+
+### Merge Operations
+`DataTable.merge()` imports rows from another table with the same table name and a compatible schema. Rows are matched by primary key, updated when found, and inserted when missing. If no primary key is configured, source rows are appended.
+
+```javascript
+const users = new DataTable('Users');
+users.addColumn('id', 'number', { primaryKey: true });
+users.addColumn('name', 'string');
+users.addColumn('email', 'string');
+
+users.addRow({ id: 1, name: 'Alice', email: 'alice@old.test' });
+users.acceptChanges();
+
+const otherUsers = new DataTable('Users');
+otherUsers.addColumn('id', 'number', { primaryKey: true });
+otherUsers.addColumn('name', 'string');
+otherUsers.addColumn('email', 'string');
+otherUsers.addColumn('role', 'string');
+
+otherUsers.addRow({ id: 1, name: 'Alice Remote', email: 'alice@new.test', role: 'admin' });
+otherUsers.addRow({ id: 2, name: 'Bob', email: 'bob@test.test', role: 'user' });
+
+const result = users.merge(otherUsers, {
+  preserveChanges: true,
+  missingSchemaAction: 'add'
+});
+
+console.log(result);
+// {
+//   tableName: 'Users',
+//   addedColumns: ['role'],
+//   ignoredColumns: [],
+//   updatedRows: 1,
+//   insertedRows: 1,
+//   preservedRows: 0,
+//   skippedRows: 0,
+//   primaryKeyAdded: null
+// }
+```
+
+Merge options:
+
+- `preserveChanges`: when `true`, local `ADDED` rows are left untouched and locally modified column values are preserved.
+- `missingSchemaAction: 'add'`: add source columns missing from the target table.
+- `missingSchemaAction: 'ignore'`: ignore source columns missing from the target table.
+- `missingSchemaAction: 'error'`: throw if the source schema contains missing target columns. This is the default.
+
+`DataSet.merge()` applies the same behavior by table name. With `missingSchemaAction: 'add'`, missing tables are cloned into the target dataset and compatible missing relations are added.
+
+```javascript
+const company = new DataSet('Company');
+const incoming = new DataSet('Company');
+
+// configure tables on both datasets...
+
+const summary = company.merge(incoming, {
+  preserveChanges: true,
+  missingSchemaAction: 'add'
+});
 ```
 
 ### Advanced Filtering Criteria

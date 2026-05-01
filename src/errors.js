@@ -11,6 +11,7 @@ class ConstraintViolationError extends DataTableError {}
 class DuplicatePrimaryKeyError extends ConstraintViolationError {}
 class ReadOnlyColumnError extends ConstraintViolationError {}
 class InvalidRowStateError extends DataTableError {}
+class SchemaMismatchError extends DataTableError {}
 
 module.exports = {
   DataTableError,
@@ -19,5 +20,6 @@ module.exports = {
   ConstraintViolationError,
   DuplicatePrimaryKeyError,
   ReadOnlyColumnError,
-  InvalidRowStateError
+  InvalidRowStateError,
+  SchemaMismatchError
 };
