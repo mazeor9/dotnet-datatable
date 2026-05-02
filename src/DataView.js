@@ -1,5 +1,6 @@
 const DataRowState = require('./enums/DataRowState');
 const { cloneValues } = require('./utils/typeUtils');
+const { DebugPreview, DebugTableSerializer, NodeInspectFormatter } = require('./debug');
 
 class DataView {
     /**
@@ -107,6 +108,10 @@ class DataView {
         return this.toObjects();
     }
 
+    toJSON() {
+        return this.toArray();
+    }
+
     toObjects(options = {}) {
         return this.getRows()
             .filter(row => options.includeDeleted === true || row.getRowState() !== DataRowState.DELETED)
@@ -117,6 +122,18 @@ class DataView {
                 }
                 return result;
             });
+    }
+
+    getPreview(maxRows = DebugPreview.DEFAULT_MAX_ROWS) {
+        return DebugPreview.getViewPreview(this, maxRows);
+    }
+
+    toDebugView(options = {}) {
+        return DebugTableSerializer.viewToDebugView(this, options);
+    }
+
+    [NodeInspectFormatter.customInspectSymbol](depth, options, inspect) {
+        return NodeInspectFormatter.inspectDataView(this, depth, options, inspect);
     }
 
     get count() {

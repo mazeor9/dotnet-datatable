@@ -1,4 +1,5 @@
 const DataColumn = require("../DataColumn");
+const { DebugTableSerializer, NodeInspectFormatter } = require("../debug");
 const {
   ColumnNotFoundError,
   DuplicatePrimaryKeyError,
@@ -109,6 +110,27 @@ class DataColumnCollection {
 
   toArray() {
     return Array.from(this._columns.values());
+  }
+
+  toJSON() {
+    return this.toArray().map((column) => (
+      typeof column.toJSON === "function"
+        ? column.toJSON()
+        : DebugTableSerializer.columnToDebugView(column)
+    ));
+  }
+
+  toDebugView() {
+    return {
+      type: "DataColumnCollection",
+      tableName: this._table ? this._table.tableName : undefined,
+      columns: this.toArray().map((column) => DebugTableSerializer.columnToDebugView(column)),
+      columnCount: this.count
+    };
+  }
+
+  [NodeInspectFormatter.customInspectSymbol]() {
+    return NodeInspectFormatter.inspectDataColumnCollection(this);
   }
 
   setPrimaryKey(columnNames) {

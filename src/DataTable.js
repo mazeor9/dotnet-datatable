@@ -5,6 +5,13 @@ const DataRow = require('./DataRow');
 const DataView = require('./DataView');
 const DataRowState = require('./enums/DataRowState');
 const {
+    DebugFormatter,
+    DebugPreview,
+    DebugSchemaSerializer,
+    DebugTableSerializer,
+    NodeInspectFormatter
+} = require('./debug');
+const {
     ConstraintViolationError,
     SchemaMismatchError,
     TypeMismatchError
@@ -1033,6 +1040,30 @@ class DataTable {
         return rows;
     }
 
+    toArray(options = {}) {
+        return this.toObjects(options);
+    }
+
+    getSchema() {
+        return DebugSchemaSerializer.getTableSchema(this);
+    }
+
+    getPreview(maxRows = DebugPreview.DEFAULT_MAX_ROWS) {
+        return DebugPreview.getTablePreview(this, maxRows);
+    }
+
+    toConsoleTable() {
+        return DebugTableSerializer.tableToArray(this, { serializeValues: true });
+    }
+
+    toDebugView(options = {}) {
+        return DebugTableSerializer.tableToDebugView(this, options);
+    }
+
+    toDebugString(options = {}) {
+        return DebugFormatter.formatDataTable(this, options);
+    }
+
     toJSON() {
         return {
             tableName: this.tableName,
@@ -1048,6 +1079,10 @@ class DataTable {
             })),
             rows: this.toObjects({ dateMode: 'iso-string', bigIntMode: 'string' })
         };
+    }
+
+    [NodeInspectFormatter.customInspectSymbol](depth, options, inspect) {
+        return NodeInspectFormatter.inspectDataTable(this, depth, options, inspect);
     }
 
     // ===== ROWSTATE MANAGEMENT METHODS =====

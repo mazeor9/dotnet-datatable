@@ -1,4 +1,5 @@
 const DataRowState = require('./enums/DataRowState');
+const { DebugTableSerializer, NodeInspectFormatter } = require('./debug');
 const {
     ColumnNotFoundError,
     TypeMismatchError,
@@ -189,6 +190,14 @@ class DataRow {
 
     toObject() {
         return { ...this._values };
+    }
+
+    toDebugView() {
+        return DebugTableSerializer.rowToDebugView(this);
+    }
+
+    [NodeInspectFormatter.customInspectSymbol]() {
+        return NodeInspectFormatter.inspectDataRow(this);
     }
 
     get rowState() {

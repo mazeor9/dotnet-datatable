@@ -42,6 +42,7 @@ A .NET-style DataTable library for JavaScript and Node.js. Build typed in-memory
 - [Installation](#installation)
 - [CSS Themes](#css-themes)
 - [Basic Usage](#basic-usage)
+- [Debugging & Inspection](#debugging--inspection)
 - [Database Integration](#database-integration)
 - [Features](#features)
 - [Methods](#methods)
@@ -115,6 +116,63 @@ const DataTable = require('dotnet-datatable').DataTable;
 // Create a new table
 const dt = new DataTable('Users');
 ```
+
+## Debugging & Inspection
+
+DataTable, DataRow, DataColumn, DataView and DataSet expose debug-friendly serializers and Node.js custom inspect output. This makes `console.log()`, `console.dir()`, `util.inspect()`, the VS Code Debug Console and Watch panels much easier to read without requiring an IDE extension.
+
+```javascript
+const { DataSet, DataTable } = require('dotnet-datatable');
+
+const customers = new DataTable('Customers');
+customers.addColumn('ID', 'number', { primaryKey: true });
+customers.addColumn('Name', 'string');
+customers.addColumn('Email', 'string');
+customers.addRow({ ID: 1, Name: 'Mario', Email: 'mario@test.it' });
+customers.addRow({ ID: 2, Name: 'Laura', Email: 'laura@test.it' });
+
+// Uses Node.js custom inspect under the hood.
+console.log(customers);
+
+// Array of plain objects, ready for console.table().
+console.table(customers.toConsoleTable());
+
+// Stable object payload for custom debug tools or future IDE visualizers.
+console.dir(customers.toDebugView(), { depth: null });
+
+// Schema-only view.
+console.dir(customers.getSchema(), { depth: null });
+
+// Small preview for large tables. Default is 10 rows.
+console.table(customers.getPreview(5));
+```
+
+Example DataSet and DataView inspection:
+
+```javascript
+const dataSet = new DataSet('CRM');
+dataSet.addTable(customers);
+
+console.dir(dataSet.toDebugView(), { depth: null });
+
+const activeCustomers = customers
+  .createView()
+  .where('ID', '>=', 1)
+  .orderBy('Name', 'asc');
+
+console.table(activeCustomers.getPreview(5));
+console.dir(activeCustomers.toDebugView(), { depth: null });
+```
+
+Useful methods:
+
+- `dataTable.toArray()` returns row objects using the existing export behavior.
+- `dataTable.toDebugView()` returns `{ type, name, columns, rows, rowCount, columnCount, preview }`.
+- `dataTable.toDebugString()` returns the same readable text used by custom inspect.
+- `dataTable.toConsoleTable()` returns plain objects for `console.table()`.
+- `dataRow.toObject()` returns a plain object with the row values.
+- `dataView.toDebugView()` includes source table, rows, row count, sort/filter summary and preview.
+- `dataSet.toDebugView()` includes all table debug views and relation metadata.
 
 ## Database Integration
 `dotnet-datatable` does not connect to databases, execute SQL, or act as an ORM. Use any external client to run your query, then load the returned rows or query result object into a DataTable.

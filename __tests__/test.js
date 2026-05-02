@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const util = require('node:util');
 const { DataSet, DataTable, DataRowState } = require('../src');
 const {
     ConstraintViolationError,
@@ -570,4 +571,138 @@ test('DataSet.fromRecordsets and DataRelation navigate parent and child rows', (
     const orders = relation.getChildRows(user);
     assert.equal(orders.length, 2);
     assert.equal(relation.getParentRow(orders[0]).get('name'), 'Mario');
+});
+
+test('DataTable.toDebugView returns a stable debug payload', () => {
+    const users = createUsersTable();
+    users.addRow({ id: 1, name: 'Mario', email: 'mario@test.it' });
+    users.addRow({ id: 2, name: 'Laura', email: 'laura@test.it' });
+
+    const debugView = users.toDebugView();
+
+    assert.equal(debugView.type, 'DataTable');
+    assert.equal(debugView.name, 'Users');
+    assert.equal(debugView.rowCount, 2);
+    assert.equal(debugView.columnCount, 3);
+    assert.deepEqual(debugView.primaryKey, ['id']);
+    assert.deepEqual(debugView.rows[0], { id: 1, name: 'Mario', email: 'mario@test.it' });
+    assert.deepEqual(debugView.preview.map(row => row.name), ['Mario', 'Laura']);
+});
+
+test('DataTable.getSchema returns column metadata for inspection', () => {
+    const users = createUsersTable();
+    const schema = users.getSchema();
+
+    assert.equal(schema.type, 'DataTableSchema');
+    assert.equal(schema.name, 'Users');
+    assert.equal(schema.columnCount, 3);
+    assert.deepEqual(schema.primaryKey, ['id']);
+    assert.deepEqual(
+        schema.columns.map(column => ({ name: column.name, dataType: column.dataType, primaryKey: column.primaryKey })),
+        [
+            { name: 'id', dataType: 'number', primaryKey: true },
+            { name: 'name', dataType: 'string', primaryKey: false },
+            { name: 'email', dataType: 'string', primaryKey: false }
+        ]
+    );
+});
+
+test('DataTable.getPreview limits rows and toConsoleTable returns plain objects', () => {
+    const users = createUsersTable();
+    users.addRow({ id: 1, name: 'Mario', email: 'mario@test.it' });
+    users.addRow({ id: 2, name: 'Laura', email: 'laura@test.it' });
+    users.addRow({ id: 3, name: 'Nina', email: 'nina@test.it' });
+
+    assert.deepEqual(users.getPreview(2).map(row => row.id), [1, 2]);
+    assert.deepEqual(users.getPreview(0), []);
+
+    const consoleRows = users.toConsoleTable();
+    assert.deepEqual(consoleRows[2], { id: 3, name: 'Nina', email: 'nina@test.it' });
+});
+
+test('DataRow.toObject and toDebugView expose values without internal fields', () => {
+    const users = createUsersTable();
+    const row = users.addRow({ id: 1, name: 'Mario', email: 'mario@test.it' });
+
+    assert.deepEqual(row.toObject(), { id: 1, name: 'Mario', email: 'mario@test.it' });
+
+    const debugView = row.toDebugView();
+    assert.equal(debugView.type, 'DataRow');
+    assert.equal(debugView.tableName, 'Users');
+    assert.equal(debugView.rowState, DataRowState.ADDED);
+    assert.deepEqual(debugView.values, { id: 1, name: 'Mario', email: 'mario@test.it' });
+});
+
+test('DataView.toDebugView and getPreview describe filtered and sorted rows', () => {
+    const users = DataTable.fromObjects([
+        { id: 1, name: 'Mario', age: 31 },
+        { id: 2, name: 'Laura', age: 26 },
+        { id: 3, name: 'Nina', age: 17 }
+    ], {
+        tableName: 'Users',
+        primaryKey: 'id'
+    });
+
+    const view = users.createView()
+        .where('age', '>=', 18)
+        .orderBy('name', 'desc');
+
+    const debugView = view.toDebugView();
+    assert.equal(debugView.type, 'DataView');
+    assert.equal(debugView.sourceTable, 'Users');
+    assert.equal(debugView.rowCount, 2);
+    assert.equal(debugView.filter, '1 filter');
+    assert.equal(debugView.sort, 'name desc');
+    assert.deepEqual(debugView.rows.map(row => row.name), ['Mario', 'Laura']);
+    assert.deepEqual(view.getPreview(1), [{ id: 1, name: 'Mario', age: 31 }]);
+});
+
+test('DataSet.toDebugView and getSchema expose tables and relations', () => {
+    const dataSet = new DataSet('Company');
+    const users = dataSet.addTable(createUsersTable());
+    users.addRow({ id: 1, name: 'Mario', email: 'mario@test.it' });
+
+    const orders = dataSet.addTable('Orders');
+    orders.addColumn('id', 'number', { primaryKey: true });
+    orders.addColumn('userId', 'number');
+    orders.addRow({ id: 10, userId: 1 });
+
+    dataSet.addRelation('UserOrders', 'Users', 'Orders', 'id', 'userId');
+
+    const debugView = dataSet.toDebugView();
+    assert.equal(debugView.type, 'DataSet');
+    assert.equal(debugView.name, 'Company');
+    assert.equal(debugView.tableCount, 2);
+    assert.deepEqual(debugView.tables.map(table => table.name), ['Users', 'Orders']);
+    assert.deepEqual(debugView.relations[0], {
+        name: 'UserOrders',
+        parentTable: 'Users',
+        parentColumn: 'id',
+        childTable: 'Orders',
+        childColumn: 'userId'
+    });
+
+    const schema = dataSet.getSchema();
+    assert.equal(schema.type, 'DataSetSchema');
+    assert.equal(schema.tableCount, 2);
+});
+
+test('custom inspect formats DataTable, DataRow and DataSet for Node.js consoles', () => {
+    const users = createUsersTable();
+    const row = users.addRow({ id: 1, name: 'Mario', email: 'mario@test.it' });
+    const dataSet = new DataSet('DebugSet');
+    dataSet.addTable(users);
+
+    const tableInspect = util.inspect(users);
+    assert.match(tableInspect, /DataTable "Users"/);
+    assert.match(tableInspect, /Columns: \[id:number, name:string, email:string\]/);
+    assert.match(tableInspect, /Preview:/);
+
+    const rowInspect = util.inspect(row);
+    assert.match(rowInspect, /DataRow "Users"/);
+    assert.match(rowInspect, /RowState: ADDED/);
+
+    const dataSetInspect = util.inspect(dataSet);
+    assert.match(dataSetInspect, /DataSet "DebugSet"/);
+    assert.match(dataSetInspect, /Users \(1 rows, 3 columns\)/);
 });

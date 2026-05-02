@@ -1,6 +1,6 @@
 {
   "name": "dotnet-datatable",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": ".NET-style DataTable, DataRow, DataView and DataSet for JavaScript/Node.js with schema inference, RowState tracking and query result mapping from any database client.",
   "main": "src/index.js",
   "style": "css/aspnetcore-bootstrap5.css",

@@ -1,5 +1,6 @@
 const DataTable = require('./DataTable');
 const DataRelation = require('./DataRelation');
+const { DebugSchemaSerializer, DebugTableSerializer, NodeInspectFormatter } = require('./debug');
 const { SchemaMismatchError } = require('./errors');
 
 class DataSet {
@@ -293,6 +294,26 @@ class DataSet {
             targetRelation.childTable.tableName === sourceRelation.childTable.tableName &&
             targetRelation.parentColumn.columnName === sourceRelation.parentColumn.columnName &&
             targetRelation.childColumn.columnName === sourceRelation.childColumn.columnName;
+    }
+
+    toJSON() {
+        return {
+            dataSetName: this.dataSetName,
+            tables: Array.from(this.tables.values()).map(table => table.toJSON()),
+            relations: (this.relations || []).map(DebugSchemaSerializer.serializeRelation)
+        };
+    }
+
+    toDebugView(options = {}) {
+        return DebugTableSerializer.dataSetToDebugView(this, options);
+    }
+
+    getSchema() {
+        return DebugSchemaSerializer.getDataSetSchema(this);
+    }
+
+    [NodeInspectFormatter.customInspectSymbol]() {
+        return NodeInspectFormatter.inspectDataSet(this);
     }
 
     /**

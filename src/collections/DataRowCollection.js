@@ -1,5 +1,6 @@
 const DataRow = require('../DataRow');
 const DataRowState = require('../enums/DataRowState');
+const { DebugTableSerializer, NodeInspectFormatter } = require('../debug');
 const {
     ColumnNotFoundError,
     ConstraintViolationError,
@@ -116,6 +117,33 @@ class DataRowCollection {
 
     toArray() {
         return [...this._rows];
+    }
+
+    toJSON() {
+        return this._rows
+            .filter(row => row.getRowState() !== DataRowState.DELETED)
+            .map(row => row.toObject());
+    }
+
+    toDebugView(options = {}) {
+        const columns = this._table ? this._table.columns.toArray() : [];
+        const rows = this._rows
+            .filter(row => options.includeDeleted === true || row.getRowState() !== DataRowState.DELETED)
+            .map(row => DebugTableSerializer.rowToObject(row, {
+                columns,
+                serializeValues: true
+            }));
+
+        return {
+            type: 'DataRowCollection',
+            tableName: this._table ? this._table.tableName : undefined,
+            rows,
+            rowCount: rows.length
+        };
+    }
+
+    [NodeInspectFormatter.customInspectSymbol](depth, options, inspect) {
+        return NodeInspectFormatter.inspectDataRowCollection(this, depth, options, inspect);
     }
 
     find(key) {

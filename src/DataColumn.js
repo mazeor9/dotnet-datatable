@@ -1,3 +1,5 @@
+const { DebugTableSerializer, NodeInspectFormatter } = require('./debug');
+
 class DataColumn {
     constructor(columnName, dataType = null, allowNullOrOptions = undefined, defaultValue = undefined) {
         this.columnName = columnName;
@@ -40,6 +42,19 @@ class DataColumn {
 
     get table() {
         return this._table;
+    }
+
+    toJSON() {
+        const { type, tableName, ...json } = DebugTableSerializer.columnToDebugView(this);
+        return json;
+    }
+
+    toDebugView() {
+        return DebugTableSerializer.columnToDebugView(this);
+    }
+
+    [NodeInspectFormatter.customInspectSymbol]() {
+        return NodeInspectFormatter.inspectDataColumn(this);
     }
 }
 
