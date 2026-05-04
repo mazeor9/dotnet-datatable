@@ -35,15 +35,16 @@ A .NET-style DataTable library for JavaScript and Node.js. Build typed in-memory
 - Database result mapping without database drivers or connections
 - Schema inference and original value tracking
 - Enterprise-style merge for DataTable and DataSet
+- Backend change tracking and broad provider result mapping
 
 ## Table of Contents
 
 - [Why dotnet-datatable?](#why-dotnet-datatable)
 - [Installation](#installation)
-- [CSS Themes](#css-themes)
 - [Basic Usage](#basic-usage)
 - [Debugging & Inspection](#debugging--inspection)
 - [Database Integration](#database-integration)
+- [Provider Result Mapping](#provider-result-mapping)
 - [Features](#features)
 - [Methods](#methods)
   - [Table Operations](#table-operations)
@@ -67,41 +68,6 @@ A .NET-style DataTable library for JavaScript and Node.js. Build typed in-memory
 
 ```bash
 npm install dotnet-datatable
-```
-
-## CSS Themes
-
-The package includes optional CSS presets aligned with typical ASP.NET-era and modern .NET UI styling approaches (2014+). These styles target HTML tables when you add the `dotnet-datatable` class (or `aspnet-gridview` / `aspnet-datagrid` / `aspnet-webdatagrid`).
-
-Import one theme:
-
-```javascript
-import 'dotnet-datatable/css/aspnetcore-bootstrap5.css';
-```
-
-Available themes:
-
-- `dotnet-datatable/css/webforms-2014.css` (ASP.NET WebForms 2014+)
-- `dotnet-datatable/css/webdatagrid-2014.css` (WebDataGrid 2014+)
-- `dotnet-datatable/css/mvc-bootstrap3.css` (ASP.NET MVC, Bootstrap 3-era)
-- `dotnet-datatable/css/aspnetcore-bootstrap5.css` (ASP.NET Core, Bootstrap 5-era)
-- `dotnet-datatable/css/blazor-fluentui.css` (Blazor, Fluent-like)
-
-Minimal markup example:
-
-```html
-<table class="dotnet-datatable">
-  <thead>
-    <tr>
-      <th class="ddt-sort-asc">Name</th>
-      <th>Age</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr><td>Alice</td><td>35</td></tr>
-    <tr class="ddt-row-selected"><td>John</td><td>25</td></tr>
-  </tbody>
-</table>
 ```
 
 ## Basic Usage
@@ -215,6 +181,67 @@ const prismaProducts = DataTable.fromObjects(rows, {
 });
 ```
 
+## Provider Result Mapping
+
+`dotnet-datatable` stays driver-neutral: it accepts results already returned by your database package and maps them into `DataTable` / `DataSet` instances. It does not connect to databases, execute SQL, or generate SQL commands.
+
+```javascript
+const users = DataTable.fromQueryResult(resultFromAnyClient, {
+    tableName: 'Users',
+    primaryKey: 'id',
+    useFieldMetadata: true
+});
+```
+
+Supported result families include:
+
+- Plain arrays from Prisma, Knex, Drizzle, Sequelize, Kysely, SQLite and similar libraries
+- PostgreSQL `pg` results: `{ rows, fields }`
+- `postgres.js` / Neon-style row arrays with `.columns` metadata
+- MySQL `mysql2` tuples: `[rows, fields]`
+- SQL Server `mssql` recordsets: `{ recordset, recordsets }`
+- SQLite/libSQL-style `{ rows, columns }`, including array rows mapped through column metadata
+- OracleDB-style `{ rows, metaData }`, including array rows mapped through metadata
+- Supabase/PostgREST or API wrappers such as `{ data: [...] }`
+- Custom wrappers with `rowsPath` and `fieldsPath`
+
+Array-row providers are normalized before loading:
+
+```javascript
+const oracleUsers = DataTable.fromQueryResult({
+    rows: [[1, 'Mario']],
+    metaData: [
+        { name: 'ID', dbTypeName: 'NUMBER' },
+        { name: 'FULL_NAME', dbTypeName: 'VARCHAR2' }
+    ]
+}, {
+    tableName: 'Users',
+    primaryKey: 'id',
+    columnNameTransform: 'camelCase'
+});
+
+console.log(oracleUsers.find(1).get('fullName')); // 'Mario'
+```
+
+For backend state tracking you can still extract a pure in-memory change snapshot:
+
+```javascript
+const changeSet = users.getChangeSet();
+console.log(changeSet.modified[0].changedColumns);
+```
+
+You can also import the change-tracking helpers directly:
+
+```javascript
+const {
+    DataTableChangeSet,
+    DataSetChangeSet
+} = require('dotnet-datatable/change-tracking');
+
+const tableChanges = DataTableChangeSet.fromTable(users);
+const dataSetChanges = DataSetChangeSet.fromDataSet(dataSet);
+```
+
 ## Features
 
 - Strongly typed columns
@@ -226,6 +253,7 @@ const prismaProducts = DataTable.fromObjects(rows, {
 - Enterprise-style merge for DataTable and DataSet
 - DataSet support for related tables 
 - DataView for filtered views of tables
+- ChangeSet snapshots for backend state tracking
 - Advanced schema management and serialization
 
 ## Methods
@@ -1085,6 +1113,7 @@ The DataTable automatically creates columns based on query result rows and, when
 - MySQL `INT` -> integer, `BIGINT` -> bigint, `DECIMAL/FLOAT/DOUBLE` -> number, `VARCHAR/TEXT` -> string, `DATE/DATETIME/TIMESTAMP` -> date, `TINYINT(1)` -> boolean, `JSON` -> json, `BLOB` -> buffer
 - SQL Server `int/smallint/tinyint` -> integer, `bigint` -> bigint, `decimal/numeric/float/real/money` -> number, `varchar/nvarchar/text` -> string, `bit` -> boolean, `date/datetime/datetime2` -> date, `varbinary` -> buffer
 - SQLite `INTEGER` -> integer, `REAL` -> number, `TEXT` -> string, `BLOB` -> buffer
+- OracleDB `NUMBER` -> number, `VARCHAR2/NVARCHAR2/CHAR` -> string, `DATE/TIMESTAMP` -> date, `BLOB/RAW` -> buffer, `CLOB` -> string, `JSON` -> json
 
 This makes it perfect for scenarios where you need to:
 - Cache database results

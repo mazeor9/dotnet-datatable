@@ -104,6 +104,29 @@ const SQLITE_TYPES = {
     json: 'json'
 };
 
+const ORACLE_TYPES = {
+    bfile: 'buffer',
+    binary_double: 'number',
+    binary_float: 'number',
+    blob: 'buffer',
+    char: 'string',
+    clob: 'string',
+    date: 'date',
+    float: 'number',
+    integer: 'integer',
+    json: 'json',
+    long: 'string',
+    nchar: 'string',
+    nclob: 'string',
+    number: 'number',
+    nvarchar2: 'string',
+    raw: 'buffer',
+    rowid: 'string',
+    timestamp: 'date',
+    varchar: 'string',
+    varchar2: 'string'
+};
+
 const TYPE_ALIASES = {
     bool: 'boolean',
     int: 'integer',
@@ -198,6 +221,24 @@ class TypeMapper {
         return 'any';
     }
 
+    static fromOracleType(type, metadata = {}) {
+        const typeName = type ||
+            metadata.dbTypeName ||
+            metadata.databaseType ||
+            metadata.typeName ||
+            metadata.fetchType;
+        if (!typeName) {
+            return 'any';
+        }
+        const lower = String(typeName).toLowerCase();
+        for (const [key, mapped] of Object.entries(ORACLE_TYPES)) {
+            if (lower.includes(key)) {
+                return mapped;
+            }
+        }
+        return 'any';
+    }
+
     static fromDatabaseType(type, provider, metadata = {}, options = {}) {
         const providerName = String(provider || '').toLowerCase();
         if (providerName === 'postgres' || providerName === 'postgresql' || providerName === 'pg') {
@@ -216,6 +257,9 @@ class TypeMapper {
         if (providerName === 'sqlite') {
             return this.fromSqliteType(type || metadata.type);
         }
+        if (providerName === 'oracle' || providerName === 'oracledb') {
+            return this.fromOracleType(type, metadata);
+        }
 
         if (metadata.dataTypeID !== undefined) {
             return this.fromPostgresDataTypeID(metadata.dataTypeID);
@@ -229,6 +273,9 @@ class TypeMapper {
                 return sqlServerType;
             }
             return this.fromSqliteType(metadata.type);
+        }
+        if (metadata.dbTypeName !== undefined) {
+            return this.fromOracleType(metadata.dbTypeName, metadata);
         }
 
         return this.normalizeType(type);

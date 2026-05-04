@@ -22,7 +22,9 @@ function getPath(source, path) {
 }
 
 function toCamelCase(value) {
-    return String(value)
+    const text = String(value).trim();
+    const normalized = /^[A-Z0-9_\-\s]+$/.test(text) ? text.toLowerCase() : text;
+    return normalized
         .replace(/[-_\s]+(.)?/g, (_, chr) => chr ? chr.toUpperCase() : '')
         .replace(/^[A-Z]/, chr => chr.toLowerCase());
 }

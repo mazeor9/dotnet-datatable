@@ -6,17 +6,22 @@ const {
 
 class ColumnMetadataNormalizer {
     static normalize(fields, options = {}) {
-        if (!Array.isArray(fields)) {
+        const normalizedFields = normalizeFieldsInput(fields);
+        if (!Array.isArray(normalizedFields)) {
             return [];
         }
 
         const resolver = createColumnNameResolver(options);
-        return fields
+        return normalizedFields
             .map(field => this.normalizeField(field, { ...options, columnNameResolver: resolver }))
             .filter(Boolean);
     }
 
     static normalizeField(field, options = {}) {
+        if (typeof field === 'string') {
+            field = { name: field };
+        }
+
         if (!field || typeof field !== 'object') {
             return null;
         }
@@ -39,7 +44,7 @@ class ColumnMetadataNormalizer {
 
         const provider = options.provider || inferProvider(field);
         const type = TypeMapper.fromDatabaseType(
-            field.dataType || field.typeName || field.databaseType,
+            field.dataType || field.typeName || field.databaseType || field.dbTypeName || field.type,
             provider,
             field,
             options
@@ -51,13 +56,36 @@ class ColumnMetadataNormalizer {
             type,
             dataType: type,
             allowNull: field.allowNull ?? field.nullable ?? true,
-            maxLength: field.columnLength ?? field.length ?? field.maxLength,
+            maxLength: field.columnLength ?? field.length ?? field.maxLength ?? field.byteSize,
             precision: field.precision,
             scale: field.decimals ?? field.scale,
             sourceColumn: sourceName,
             metadata: { ...field }
         };
     }
+}
+
+function normalizeFieldsInput(fields) {
+    if (!fields) {
+        return [];
+    }
+    if (Array.isArray(fields)) {
+        return fields.map((field, index) => {
+            if (typeof field === 'string') {
+                return { name: field, ordinal: index };
+            }
+            return field;
+        });
+    }
+    if (fields && typeof fields === 'object') {
+        return Object.entries(fields).map(([name, field]) => {
+            if (field && typeof field === 'object') {
+                return { name, ...field };
+            }
+            return { name, type: field };
+        });
+    }
+    return [];
 }
 
 function inferProvider(field) {
@@ -69,6 +97,9 @@ function inferProvider(field) {
     }
     if (field.type && (field.type.name || field.type.declaration)) {
         return 'mssql';
+    }
+    if (field.dbTypeName !== undefined || field.fetchType !== undefined) {
+        return 'oracledb';
     }
     return undefined;
 }

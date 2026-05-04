@@ -9,6 +9,10 @@ const QueryResultMapper = require('./mapping/QueryResultMapper');
 const SchemaInferer = require('./mapping/SchemaInferer');
 const TypeMapper = require('./mapping/TypeMapper');
 const ColumnMetadataNormalizer = require('./mapping/ColumnMetadataNormalizer');
+const {
+    DataSetChangeSet,
+    DataTableChangeSet
+} = require('./changeTracking');
 
 module.exports = {
     DataTable,
@@ -21,5 +25,7 @@ module.exports = {
     QueryResultMapper,
     SchemaInferer,
     TypeMapper,
-    ColumnMetadataNormalizer
+    ColumnMetadataNormalizer,
+    DataSetChangeSet,
+    DataTableChangeSet
 };

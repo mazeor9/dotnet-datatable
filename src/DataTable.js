@@ -1131,6 +1131,11 @@ class DataTable {
         return this.rows._rows.filter(row => row.getRowState() === normalized);
     }
 
+    getChangeSet(options = {}) {
+        const { DataTableChangeSet } = require('./changeTracking');
+        return DataTableChangeSet.fromTable(this, options);
+    }
+
     /**
      * Gets rows by their state
      * @param {string} state - Row state to filter by

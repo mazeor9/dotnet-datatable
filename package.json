@@ -3,22 +3,15 @@
   "version": "1.4.0",
   "description": ".NET-style DataTable, DataRow, DataView and DataSet for JavaScript/Node.js with schema inference, RowState tracking and query result mapping from any database client.",
   "main": "src/index.js",
-  "style": "css/aspnetcore-bootstrap5.css",
   "exports": {
     ".": {
       "require": "./src/index.js",
       "default": "./src/index.js"
     },
-    "./css/webforms-2014": "./css/webforms-2014.css",
-    "./css/webforms-2014.css": "./css/webforms-2014.css",
-    "./css/webdatagrid-2014": "./css/webdatagrid-2014.css",
-    "./css/webdatagrid-2014.css": "./css/webdatagrid-2014.css",
-    "./css/mvc-bootstrap3": "./css/mvc-bootstrap3.css",
-    "./css/mvc-bootstrap3.css": "./css/mvc-bootstrap3.css",
-    "./css/aspnetcore-bootstrap5": "./css/aspnetcore-bootstrap5.css",
-    "./css/aspnetcore-bootstrap5.css": "./css/aspnetcore-bootstrap5.css",
-    "./css/blazor-fluentui": "./css/blazor-fluentui.css",
-    "./css/blazor-fluentui.css": "./css/blazor-fluentui.css"
+    "./change-tracking": {
+      "require": "./src/changeTracking/index.js",
+      "default": "./src/changeTracking/index.js"
+    }
   },
   "scripts": {
     "test": "node --test __tests__/test.js"
@@ -54,9 +47,7 @@
     "csharp",
     "vbnet",
     "asp.net",
-    "aspnet",
-    "webforms",
-    "gridview"
+    "aspnet"
   ],
   "author": "mazeor",
   "license": "MIT"

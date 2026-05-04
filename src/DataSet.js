@@ -175,6 +175,11 @@ class DataSet {
         }
     }
 
+    getChangeSet(options = {}) {
+        const { DataSetChangeSet } = require('./changeTracking');
+        return DataSetChangeSet.fromDataSet(this, options);
+    }
+
     /**
      * Merges another DataSet, or a single DataTable, into this DataSet.
      * Existing tables are merged by table name; missing tables follow missingSchemaAction.

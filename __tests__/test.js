@@ -1,7 +1,13 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const util = require('node:util');
-const { DataSet, DataTable, DataRowState } = require('../src');
+const {
+    DataSet,
+    DataSetChangeSet,
+    DataTable,
+    DataTableChangeSet,
+    DataRowState
+} = require('../src');
 const {
     ConstraintViolationError,
     DuplicatePrimaryKeyError,
@@ -400,6 +406,76 @@ test('DataTable.fromQueryResult supports SQL Server-like and wrapper results', (
     assert.equal(wrapped.find(2).get('name'), 'Luca');
 });
 
+test('DataTable.fromQueryResult supports postgres.js-style arrays with column metadata', () => {
+    const postgresJsResult = [
+        { id: 1, name: 'Mario' }
+    ];
+    postgresJsResult.columns = [
+        { name: 'id', dataTypeID: 23 },
+        { name: 'name', dataTypeID: 1043 }
+    ];
+
+    const users = DataTable.fromQueryResult(postgresJsResult, {
+        tableName: 'Users',
+        primaryKey: 'id',
+        useFieldMetadata: true
+    });
+
+    assert.equal(users.columns.get('id').dataType, 'integer');
+    assert.equal(users.columns.get('name').dataType, 'string');
+    assert.equal(users.find(1).get('name'), 'Mario');
+});
+
+test('DataTable.fromQueryResult maps array rows with column metadata', () => {
+    const sqliteResult = {
+        rows: [
+            [1, 'Mario'],
+            [2, 'Laura']
+        ],
+        columns: [
+            { name: 'id', type: 'INTEGER' },
+            { name: 'name', type: 'TEXT' }
+        ]
+    };
+
+    const users = DataTable.fromQueryResult(sqliteResult, {
+        tableName: 'Users',
+        primaryKey: 'id',
+        provider: 'sqlite',
+        useFieldMetadata: true
+    });
+
+    assert.equal(users.columns.get('id').dataType, 'integer');
+    assert.equal(users.columns.get('name').dataType, 'string');
+    assert.equal(users.rows.count, 2);
+    assert.equal(users.find(2).get('name'), 'Laura');
+});
+
+test('DataTable.fromQueryResult supports Oracle-style metadata and uppercase column transforms', () => {
+    const oracleResult = {
+        rows: [
+            [1, 'Mario']
+        ],
+        metaData: [
+            { name: 'ID', dbTypeName: 'NUMBER', nullable: false },
+            { name: 'FULL_NAME', dbTypeName: 'VARCHAR2', nullable: true }
+        ]
+    };
+
+    const users = DataTable.fromQueryResult(oracleResult, {
+        tableName: 'Users',
+        primaryKey: 'id',
+        columnNameTransform: 'camelCase',
+        useFieldMetadata: true
+    });
+
+    assert.equal(users.columnExists('id'), true);
+    assert.equal(users.columnExists('fullName'), true);
+    assert.equal(users.columns.get('id').dataType, 'number');
+    assert.equal(users.columns.get('fullName').dataType, 'string');
+    assert.equal(users.find(1).get('fullName'), 'Mario');
+});
+
 test('DataTable.fromRows applies include, exclude, rename and columnNameTransform options', () => {
     const users = DataTable.fromRows([
         { user_id: 1, full_name: 'Mario Rossi', ignored_value: 'x', created_at: '2026-01-01T00:00:00Z' }
@@ -705,4 +781,54 @@ test('custom inspect formats DataTable, DataRow and DataSet for Node.js consoles
     const dataSetInspect = util.inspect(dataSet);
     assert.match(dataSetInspect, /DataSet "DebugSet"/);
     assert.match(dataSetInspect, /Users \(1 rows, 3 columns\)/);
+});
+
+test('DataTableChangeSet groups added, modified and deleted rows', () => {
+    const users = DataTable.fromObjects([
+        { id: 1, name: 'Mario', active: true },
+        { id: 2, name: 'Laura', active: true }
+    ], {
+        tableName: 'Users',
+        primaryKey: 'id'
+    });
+
+    users.find(1).set('name', 'Mario Rossi');
+    users.addRow({ id: 3, name: 'Nina', active: false });
+    users.find(2).delete();
+
+    const changeSet = DataTableChangeSet.fromTable(users);
+
+    assert.equal(changeSet.tableName, 'Users');
+    assert.deepEqual(changeSet.primaryKey, ['id']);
+    assert.equal(changeSet.count, 3);
+    assert.equal(changeSet.hasChanges, true);
+    assert.deepEqual(changeSet.added.map(change => change.values.id), [3]);
+    assert.deepEqual(changeSet.modified[0].changedColumns, ['name']);
+    assert.deepEqual(changeSet.modified[0].originalValues.name, 'Mario');
+    assert.deepEqual(changeSet.deleted[0].key, { id: 2 });
+    assert.equal(changeSet.toObject().hasChanges, true);
+    assert.equal(users.getChangeSet().count, 3);
+});
+
+test('DataSetChangeSet collects changed tables only by default', () => {
+    const dataSet = new DataSet('Company');
+    const users = dataSet.addTable('Users');
+    users.addColumn('id', 'number', { primaryKey: true });
+    users.addColumn('name', 'string');
+    users.addRow({ id: 1, name: 'Mario' });
+    users.acceptChanges();
+    users.find(1).set('name', 'Mario Rossi');
+
+    const departments = dataSet.addTable('Departments');
+    departments.addColumn('id', 'number', { primaryKey: true });
+    departments.addColumn('name', 'string');
+    departments.addRow({ id: 10, name: 'IT' });
+    departments.acceptChanges();
+
+    const changeSet = DataSetChangeSet.fromDataSet(dataSet);
+
+    assert.equal(changeSet.dataSetName, 'Company');
+    assert.equal(changeSet.count, 1);
+    assert.deepEqual(changeSet.tables.map(table => table.tableName), ['Users']);
+    assert.equal(changeSet.table('Departments'), null);
 });
