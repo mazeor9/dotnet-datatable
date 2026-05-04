@@ -42,6 +42,7 @@ A .NET-style DataTable library for JavaScript and Node.js. Build typed in-memory
 - [Why dotnet-datatable?](#why-dotnet-datatable)
 - [Installation](#installation)
 - [Basic Usage](#basic-usage)
+- [TypeScript Support](#typescript-support)
 - [Debugging & Inspection](#debugging--inspection)
 - [Database Integration](#database-integration)
 - [Provider Result Mapping](#provider-result-mapping)
@@ -81,6 +82,53 @@ const DataTable = require('dotnet-datatable').DataTable;
 
 // Create a new table
 const dt = new DataTable('Users');
+```
+
+## TypeScript Support
+
+The package runtime is still plain JavaScript/CommonJS, but TypeScript declarations are included in the npm package. You can use it from TypeScript with named imports and full IntelliSense, similar to `r6-data.js`.
+
+```typescript
+import {
+  DataSet,
+  DataTable,
+  type DataTableDebugView,
+  type DataTableSchemaDebugView
+} from 'dotnet-datatable';
+
+interface Customer {
+  id: number;
+  name: string;
+  email: string;
+}
+
+const customers = DataTable.fromObjects<Customer>([
+  { id: 1, name: 'Mario', email: 'mario@test.it' },
+  { id: 2, name: 'Laura', email: 'laura@test.it' }
+], {
+  tableName: 'Customers',
+  primaryKey: 'id'
+});
+
+const first = customers.find(1);
+const email = first?.get('email');
+
+const schema: DataTableSchemaDebugView = customers.getSchema();
+const debugView: DataTableDebugView = customers.toDebugView();
+```
+
+```javascript
+const { DataTable } = require('dotnet-datatable');
+
+const users = new DataTable('Users');
+```
+
+The change tracking subpath is typed too:
+
+```typescript
+import { DataTableChangeSet } from 'dotnet-datatable/change-tracking';
+
+const changeSet = DataTableChangeSet.fromTable(customers);
 ```
 
 ## Debugging & Inspection
