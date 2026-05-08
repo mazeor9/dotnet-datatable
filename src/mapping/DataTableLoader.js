@@ -55,6 +55,9 @@ class DataTableLoader {
 
         const row = table.newRow();
         for (const column of table.columns) {
+            if (typeof column.expression === 'function') {
+                continue;
+            }
             if (!Object.prototype.hasOwnProperty.call(normalized, column.columnName)) {
                 continue;
             }
@@ -192,6 +195,10 @@ class DataTableLoader {
                     }
                 }
             }
+        }
+
+        if (table?.rows && typeof table.rows._rebuildIndexes === 'function') {
+            table.rows._rebuildIndexes();
         }
     }
 

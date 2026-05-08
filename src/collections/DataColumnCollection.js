@@ -53,6 +53,10 @@ class DataColumnCollection {
       }
     }
 
+    if (this._table?.rows && typeof this._table.rows._rebuildIndexes === "function") {
+      this._table.rows._rebuildIndexes();
+    }
+
     return column;
   }
 
@@ -78,6 +82,10 @@ class DataColumnCollection {
     let ordinal = 0;
     for (const col of this._columns.values()) {
       col.ordinal = ordinal++;
+    }
+
+    if (this._table?.rows && typeof this._table.rows._rebuildIndexes === "function") {
+      this._table.rows._rebuildIndexes();
     }
   }
 
@@ -166,6 +174,10 @@ class DataColumnCollection {
     }
 
     this._validatePrimaryKeyOnExistingRows();
+
+    if (this._table?.rows && typeof this._table.rows._rebuildIndexes === "function") {
+      this._table.rows._rebuildIndexes();
+    }
   }
 
   getPrimaryKey() {
@@ -180,6 +192,10 @@ class DataColumnCollection {
       }
     }
     this._primaryKey = [];
+
+    if (this._table?.rows && typeof this._table.rows._rebuildIndexes === "function") {
+      this._table.rows._rebuildIndexes();
+    }
   }
 
   _validatePrimaryKeyOnExistingRows() {

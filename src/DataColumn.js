@@ -34,6 +34,10 @@ class DataColumn {
         this.metadata = options.metadata ?? null;
         this._table = null;
 
+        if (typeof this.expression === 'function') {
+            this.readOnly = true;
+        }
+
         if (this.isPrimaryKey) {
             this.unique = true;
             this.allowNull = false;
@@ -42,6 +46,10 @@ class DataColumn {
 
     get table() {
         return this._table;
+    }
+
+    get isComputed() {
+        return typeof this.expression === 'function';
     }
 
     toJSON() {

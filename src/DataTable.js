@@ -39,7 +39,12 @@ class DataTable {
         const column = this.columns.add(columnName, dataType, options);
         if (options && typeof options === 'object') {
             if (options.caption !== undefined) column.caption = options.caption;
-            if (options.expression !== undefined) column.expression = options.expression;
+            if (options.expression !== undefined) {
+                column.expression = options.expression;
+                if (typeof column.expression === 'function') {
+                    column.readOnly = true;
+                }
+            }
         }
         return column;
     }
@@ -237,6 +242,9 @@ class DataTable {
         for (const row of this.rows) {
             const newRow = newTable.newRow();
             for (const col of this.columns) {
+                if (typeof col.expression === 'function') {
+                    continue;
+                }
                 newRow.set(col.columnName, row.get(col.columnName));
             }
             newRow._originalValues = cloneValues(row._originalValues);

@@ -18,6 +18,9 @@ class DataRow {
         this._originalValues = {};
 
         for (const column of table.columns) {
+            if (typeof column.expression === 'function') {
+                continue;
+            }
             this._values[column.columnName] = this._evaluateDefaultValue(column);
         }
         this._originalValues = cloneValues(this._values);
@@ -41,10 +44,10 @@ class DataRow {
     get(index) {
         if (typeof index === 'number') {
             const column = this._table.columns.get(index);
-            return this._values[column.columnName];
+            return this._getByName(column.columnName, new Set());
         }
         const column = this._table.columns.get(index);
-        return this._values[column.columnName];
+        return this._getByName(column.columnName, new Set());
     }
 
     /**
@@ -64,6 +67,10 @@ class DataRow {
             column = this._table.columns.get(columnName);
         } catch (e) {
             throw new ColumnNotFoundError(`Column '${columnName}' does not exist`);
+        }
+
+        if (typeof column.expression === 'function') {
+            throw new ReadOnlyColumnError(`Column '${columnName}' is read-only`);
         }
 
         if (column.readOnly && this._rowState !== DataRowState.DETACHED) {
@@ -89,9 +96,6 @@ class DataRow {
             throw new ConstraintViolationError(`Column '${columnName}' exceeds maxLength ${column.maxLength}`);
         }
 
-        this._validateUniqueness(columnName, coercedValue);
-        this._validatePrimaryKeyIfNeeded(columnName, coercedValue);
-
         const currentValue = this._values[columnName];
         if (this._areEqual(currentValue, coercedValue)) {
             return;
@@ -100,6 +104,10 @@ class DataRow {
         if (this._rowState === DataRowState.UNCHANGED) {
             this._originalValues = cloneValues(this._values);
             this._rowState = DataRowState.MODIFIED;
+        }
+
+        if (this._table?.rows && typeof this._table.rows._onRowValueChange === 'function') {
+            this._table.rows._onRowValueChange(this, columnName, currentValue, coercedValue);
         }
 
         this._values[columnName] = coercedValue;
@@ -138,7 +146,11 @@ class DataRow {
      */
     rejectChanges() {
         if (this._rowState === DataRowState.MODIFIED) {
-            this._values = cloneValues(this._originalValues);
+            const restored = cloneValues(this._originalValues);
+            if (this._table?.rows && typeof this._table.rows._reindexRow === 'function') {
+                this._table.rows._reindexRow(this, restored);
+            }
+            this._values = restored;
             this._rowState = DataRowState.UNCHANGED;
             return;
         }
@@ -146,6 +158,9 @@ class DataRow {
         if (this._rowState === DataRowState.DELETED) {
             this._values = cloneValues(this._originalValues);
             this._rowState = DataRowState.UNCHANGED;
+            if (this._table?.rows && typeof this._table.rows._indexRow === 'function') {
+                this._table.rows._indexRow(this);
+            }
             return;
         }
 
@@ -184,6 +199,9 @@ class DataRow {
         }
         if (this._rowState === DataRowState.UNCHANGED) {
             this._originalValues = cloneValues(this._values);
+        }
+        if (this._table?.rows && typeof this._table.rows._unindexRow === 'function') {
+            this._table.rows._unindexRow(this);
         }
         this._rowState = DataRowState.DELETED;
     }
@@ -231,6 +249,9 @@ class DataRow {
     }
 
     _initializeNewColumn(column) {
+        if (typeof column.expression === 'function') {
+            return;
+        }
         const value = this._evaluateDefaultValue(column);
         this._values[column.columnName] = value;
         if (this._rowState === DataRowState.UNCHANGED) {
@@ -349,51 +370,37 @@ class DataRow {
         return a === b;
     }
 
-    _validateUniqueness(columnName, value) {
+    _getByName(columnName, evaluationStack) {
         const column = this._table.columns.get(columnName);
-        if (!column.unique) {
-            return;
+        if (typeof column.expression !== 'function') {
+            return this._values[column.columnName];
         }
-        const pk = this._table.columns.getPrimaryKey();
-        if (pk.length > 1 && pk.includes(columnName)) {
-            return;
+
+        if (evaluationStack.has(columnName)) {
+            throw new Error(`Circular expression detected for column '${columnName}'`);
         }
-        if (value === null || value === undefined) {
-            return;
-        }
-        for (const row of this._table.rows?._rows ?? []) {
-            if (row === this) continue;
-            if (typeof row.getRowState === "function" && row.getRowState() === DataRowState.DELETED) continue;
-            if (this._areEqual(row.get(columnName), value)) {
-                if (column.isPrimaryKey) {
-                    throw new DuplicatePrimaryKeyError(`Duplicate primary key for column '${columnName}': ${value}`);
-                }
-                throw new ConstraintViolationError(`Constraint violation: duplicate value for unique column '${columnName}'`);
-            }
+        evaluationStack.add(columnName);
+
+        try {
+            const proxy = this._createExpressionProxy(evaluationStack);
+            return column.expression(proxy, this, this._table);
+        } finally {
+            evaluationStack.delete(columnName);
         }
     }
 
-    _validatePrimaryKeyIfNeeded(columnName, newValue) {
-        const pk = this._table.columns.getPrimaryKey();
-        if (pk.length === 0 || !pk.includes(columnName)) {
-            return;
-        }
-        const keyValues = pk.map((name) => (name === columnName ? newValue : this._values[name]));
-        if (keyValues.some((v) => v === null || v === undefined)) {
-            return;
-        }
-        for (const row of this._table.rows?._rows ?? []) {
-            if (row === this) continue;
-            if (typeof row.getRowState === "function" && row.getRowState() === DataRowState.DELETED) continue;
-            const otherKeyValues = pk.map((name) => row.get(name));
-            if (otherKeyValues.some((v) => v === null || v === undefined)) continue;
-            const same = keyValues.every((v, i) => this._areEqual(v, otherKeyValues[i]));
-            if (same) {
-                throw new DuplicatePrimaryKeyError(
-                    `Duplicate primary key (${pk.join(",")}): ${keyValues.join(",")}`
-                );
+    _createExpressionProxy(evaluationStack) {
+        return new Proxy(this, {
+            get: (target, prop) => {
+                if (prop in target) {
+                    return target[prop];
+                }
+                if (typeof prop === 'string' && target._table && target._table.columnExists(prop)) {
+                    return target._getByName(prop, evaluationStack);
+                }
+                return undefined;
             }
-        }
+        });
     }
 }
 

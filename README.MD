@@ -28,9 +28,11 @@ A .NET-style DataTable library for JavaScript and Node.js. Build typed in-memory
 ## Features
 
 - Strongly typed columns
+- Computed columns via `expression: (row) => ...`
 - Row management
 - Sorting and filtering
 - Data validation
+- Fast primary key lookups and unique checks (internal indexes)
 - Query result loading from plain objects and common SQL client result shapes
 - Database result mapping without database drivers or connections
 - Schema inference and original value tracking
@@ -871,6 +873,16 @@ dt.columnExists('name');
 
 // Remove column
 dt.removeColumn('age');
+
+// Computed column via expression function (read-only)
+dt.addColumn('fullName', 'string', {
+    expression: (row) => `${row.firstName} ${row.lastName}`
+});
+
+const r = dt.newRow();
+r.set('firstName', 'Mario');
+r.set('lastName', 'Rossi');
+console.log(r.get('fullName')); // "Mario Rossi"
 ```
 
 ### Table Manipulation

@@ -44,7 +44,7 @@ export interface DataColumnOptions {
   primaryKey?: boolean;
   isPrimaryKey?: boolean;
   caption?: string;
-  expression?: unknown;
+  expression?: unknown | ((row: any, dataRow?: DataRow<any>, table?: DataTable<any>) => unknown);
   readOnly?: boolean;
   unique?: boolean;
   maxLength?: number | null;
@@ -234,7 +234,7 @@ export class DataColumn {
   allowNull: boolean;
   defaultValue: unknown;
   caption: string;
-  expression: unknown;
+  expression: unknown | ((row: any, dataRow?: DataRow<any>, table?: DataTable<any>) => unknown);
   readOnly: boolean;
   unique: boolean;
   isPrimaryKey: boolean;
@@ -243,6 +243,7 @@ export class DataColumn {
   metadata: unknown;
 
   readonly table: DataTable<any> | null;
+  readonly isComputed: boolean;
 
   toJSON(): Omit<DataColumnDebugView, 'type' | 'tableName'>;
   toDebugView(): DataColumnDebugView;

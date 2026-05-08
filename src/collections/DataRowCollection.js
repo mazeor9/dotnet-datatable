@@ -12,12 +12,15 @@ class DataRowCollection {
     constructor(table) {
         this._table = table;
         this._rows = [];
+        this._pkIndex = new Map();
+        this._uniqueIndexes = new Map();
          // direct access to index column
          const func = (index) => this._rows[index];
         
         // Copia tutte le proprietà e metodi nell'oggetto funzione
         Object.setPrototypeOf(func, DataRowCollection.prototype);
         Object.assign(func, this);
+        func._rebuildIndexes();
         
         // Crea un proxy per gestire sia l'accesso via indice che via funzione
         return new Proxy(func, {
@@ -70,6 +73,7 @@ class DataRowCollection {
         this._validateRowConstraints(dataRow);
         dataRow._attachToTable(this._table);
         this._rows.push(dataRow);
+        this._indexRow(dataRow);
         return dataRow;
     }
 
@@ -79,6 +83,7 @@ class DataRowCollection {
     remove(row) {
         const index = this._rows.indexOf(row);
         if (index !== -1) {
+            this._unindexRow(row);
             this._rows.splice(index, 1);
             if (row instanceof DataRow) {
                 row._setRowState(DataRowState.DETACHED);
@@ -92,6 +97,7 @@ class DataRowCollection {
     removeAt(index) {
         if (index >= 0 && index < this._rows.length) {
             const [row] = this._rows.splice(index, 1);
+            this._unindexRow(row);
             if (row instanceof DataRow) {
                 row._setRowState(DataRowState.DETACHED);
             }
@@ -105,6 +111,7 @@ class DataRowCollection {
             }
         }
         this._rows = [];
+        this._rebuildIndexes();
     }
 
     get count() {
@@ -167,13 +174,12 @@ class DataRowCollection {
             throw new InvalidRowStateError(`Invalid key length for primary key (${pk.join(",")})`);
         }
 
-        for (const row of this._rows) {
-            if (row.getRowState() === DataRowState.DELETED) continue;
-            const rowKeyValues = pk.map((name) => row.get(name));
-            const same = rowKeyValues.every((v, i) => row._areEqual(v, keyValues[i]));
-            if (same) return row;
+        if (keyValues.some((v) => v === null || v === undefined)) {
+            return null;
         }
-        return null;
+
+        const keyString = this._serializeKeyValues(keyValues);
+        return this._pkIndex.get(keyString) || null;
     }
 
     *[Symbol.iterator]() {
@@ -188,6 +194,7 @@ class DataRowCollection {
             row._table = this._table;
         }
         this._rows.push(row);
+        this._indexRow(row);
     }
 
     _validateRowConstraints(row) {
@@ -195,27 +202,12 @@ class DataRowCollection {
         const pk = this._table.columns.getPrimaryKey();
 
         for (const col of columns) {
+            if (typeof col.expression === 'function') {
+                continue;
+            }
             const value = row.get(col.columnName);
             if ((value === null || value === undefined) && col.allowNull === false) {
                 throw new ConstraintViolationError(`Column '${col.columnName}' does not allow null values`);
-            }
-        }
-
-        for (const col of columns) {
-            if (!col.unique) continue;
-            if (pk.length > 1 && pk.includes(col.columnName)) continue;
-            const value = row.get(col.columnName);
-            if (value === null || value === undefined) continue;
-            for (const existing of this._rows) {
-                if (existing.getRowState() === DataRowState.DELETED) continue;
-                if (existing._areEqual(existing.get(col.columnName), value)) {
-                    if (col.isPrimaryKey) {
-                        throw new DuplicatePrimaryKeyError(`Duplicate primary key for column '${col.columnName}': ${value}`);
-                    }
-                    throw new ConstraintViolationError(
-                        `Constraint violation: duplicate value for unique column '${col.columnName}'`
-                    );
-                }
             }
         }
 
@@ -226,15 +218,284 @@ class DataRowCollection {
                     `Primary key '${pk.join(",")}' cannot contain null values`
                 );
             }
-            for (const existing of this._rows) {
-                if (existing.getRowState() === DataRowState.DELETED) continue;
-                const other = pk.map((name) => existing.get(name));
-                const same = other.every((v, i) => existing._areEqual(v, keyValues[i]));
-                if (same) {
-                    throw new DuplicatePrimaryKeyError(
-                        `Duplicate primary key (${pk.join(",")}): ${keyValues.join(",")}`
+            const keyString = this._serializeKeyValues(keyValues);
+            if (this._pkIndex.has(keyString)) {
+                throw new DuplicatePrimaryKeyError(
+                    `Duplicate primary key (${pk.join(",")}): ${keyValues.join(",")}`
+                );
+            }
+        }
+
+        for (const col of columns) {
+            if (!col.unique) continue;
+            if (typeof col.expression === 'function') continue;
+            if (pk.length > 1 && pk.includes(col.columnName)) continue;
+            const value = row.get(col.columnName);
+            if (value === null || value === undefined) continue;
+
+            if (pk.length === 1 && pk[0] === col.columnName) {
+                continue;
+            }
+
+            const index = this._uniqueIndexes.get(col.columnName);
+            if (!index) {
+                continue;
+            }
+            const valueKey = this._serializeIndexValue(value);
+            if (valueKey === null) {
+                continue;
+            }
+            if (index.has(valueKey)) {
+                throw new ConstraintViolationError(
+                    `Constraint violation: duplicate value for unique column '${col.columnName}'`
+                );
+            }
+        }
+    }
+
+    _rebuildIndexes() {
+        this._pkIndex = new Map();
+        this._uniqueIndexes = new Map();
+
+        const pk = this._table?.columns?.getPrimaryKey?.() ?? [];
+        const columns = this._table?.columns?.toArray?.() ?? [];
+
+        for (const col of columns) {
+            if (!col || !col.unique) continue;
+            if (typeof col.expression === 'function') continue;
+            if (pk.length > 1 && pk.includes(col.columnName)) continue;
+            if (pk.length === 1 && pk[0] === col.columnName) continue;
+            this._uniqueIndexes.set(col.columnName, new Map());
+        }
+
+        for (const row of this._rows) {
+            this._indexRow(row);
+        }
+    }
+
+    _serializeKeyValues(values) {
+        return JSON.stringify(values.map((value) => this._serializeIndexValue(value)));
+    }
+
+    _serializeIndexValue(value) {
+        if (value === null) return null;
+        if (value === undefined) return null;
+        if (value instanceof Date) return `d:${value.getTime()}`;
+        if (typeof value === 'bigint') return `bi:${value.toString()}`;
+        if (typeof Buffer !== 'undefined' && Buffer.isBuffer(value)) return `buf:${value.toString('base64')}`;
+        if (typeof value === 'number') return `n:${Object.is(value, -0) ? '-0' : String(value)}`;
+        if (typeof value === 'boolean') return `b:${value ? '1' : '0'}`;
+        if (typeof value === 'string') return `s:${value}`;
+        try {
+            return `j:${JSON.stringify(value, (_, item) => {
+                if (item instanceof Date) return { $type: 'date', value: item.toISOString() };
+                if (typeof item === 'bigint') return { $type: 'bigint', value: item.toString() };
+                if (typeof Buffer !== 'undefined' && Buffer.isBuffer(item)) return { $type: 'buffer', value: item.toString('base64') };
+                return item;
+            })}`;
+        } catch (_) {
+            return `u:${String(value)}`;
+        }
+    }
+
+    _indexRow(row) {
+        if (!(row instanceof DataRow)) {
+            return;
+        }
+        if (row.getRowState() === DataRowState.DELETED || row.getRowState() === DataRowState.DETACHED) {
+            return;
+        }
+
+        const pk = this._table.columns.getPrimaryKey();
+        if (pk.length > 0) {
+            const keyValues = pk.map((name) => row.get(name));
+            if (keyValues.some((v) => v === null || v === undefined)) {
+                throw new ConstraintViolationError(
+                    `Primary key '${pk.join(",")}' cannot contain null values`
+                );
+            }
+            const keyString = this._serializeKeyValues(keyValues);
+            const existing = this._pkIndex.get(keyString);
+            if (existing && existing !== row) {
+                throw new DuplicatePrimaryKeyError(
+                    `Duplicate primary key (${pk.join(",")}): ${keyValues.join(",")}`
+                );
+            }
+            this._pkIndex.set(keyString, row);
+        }
+
+        for (const [columnName, index] of this._uniqueIndexes.entries()) {
+            const value = row.get(columnName);
+            const valueKey = this._serializeIndexValue(value);
+            if (valueKey === null) {
+                continue;
+            }
+            const existing = index.get(valueKey);
+            if (existing && existing !== row) {
+                throw new ConstraintViolationError(
+                    `Constraint violation: duplicate value for unique column '${columnName}'`
+                );
+            }
+            index.set(valueKey, row);
+        }
+    }
+
+    _unindexRow(row) {
+        if (!(row instanceof DataRow)) {
+            return;
+        }
+
+        const pk = this._table.columns.getPrimaryKey();
+        if (pk.length > 0) {
+            const keyValues = pk.map((name) => row.get(name));
+            if (!keyValues.some((v) => v === null || v === undefined)) {
+                const keyString = this._serializeKeyValues(keyValues);
+                if (this._pkIndex.get(keyString) === row) {
+                    this._pkIndex.delete(keyString);
+                }
+            }
+        }
+
+        for (const [columnName, index] of this._uniqueIndexes.entries()) {
+            const value = row.get(columnName);
+            const valueKey = this._serializeIndexValue(value);
+            if (valueKey === null) {
+                continue;
+            }
+            if (index.get(valueKey) === row) {
+                index.delete(valueKey);
+            }
+        }
+    }
+
+    _onRowValueChange(row, columnName, oldValue, newValue) {
+        if (!(row instanceof DataRow)) {
+            return;
+        }
+        if (row.getRowState() === DataRowState.DELETED) {
+            return;
+        }
+
+        const pk = this._table.columns.getPrimaryKey();
+        const isDetached = row.getRowState() === DataRowState.DETACHED;
+        const pkAffected = pk.includes(columnName);
+        const uniqueIndex = this._uniqueIndexes.get(columnName) || null;
+
+        if (pkAffected && pk.length > 0) {
+            const keyValues = pk.map((name) => (name === columnName ? newValue : row.get(name)));
+            if (keyValues.some((v) => v === null || v === undefined)) {
+                if (!isDetached) {
+                    throw new ConstraintViolationError(
+                        `Primary key '${pk.join(",")}' cannot contain null values`
                     );
                 }
+                return;
+            }
+            const newKey = this._serializeKeyValues(keyValues);
+            const existing = this._pkIndex.get(newKey);
+            if (existing && existing !== row) {
+                throw new DuplicatePrimaryKeyError(
+                    `Duplicate primary key (${pk.join(",")}): ${keyValues.join(",")}`
+                );
+            }
+
+            if (!isDetached) {
+                const oldKeyValues = pk.map((name) => row.get(name));
+                const oldKey = this._serializeKeyValues(oldKeyValues);
+                if (oldKey !== newKey) {
+                    if (this._pkIndex.get(oldKey) === row) {
+                        this._pkIndex.delete(oldKey);
+                    }
+                    this._pkIndex.set(newKey, row);
+                }
+            }
+        }
+
+        if (uniqueIndex) {
+            if (newValue !== null && newValue !== undefined) {
+                const newValueKey = this._serializeIndexValue(newValue);
+                const existing = uniqueIndex.get(newValueKey);
+                if (existing && existing !== row) {
+                    throw new ConstraintViolationError(
+                        `Constraint violation: duplicate value for unique column '${columnName}'`
+                    );
+                }
+            }
+
+            if (!isDetached) {
+                const oldValueKey = this._serializeIndexValue(oldValue);
+                const newValueKey = this._serializeIndexValue(newValue);
+
+                if (oldValueKey !== null && oldValueKey !== newValueKey && uniqueIndex.get(oldValueKey) === row) {
+                    uniqueIndex.delete(oldValueKey);
+                }
+                if (newValueKey !== null && uniqueIndex.get(newValueKey) !== row) {
+                    uniqueIndex.set(newValueKey, row);
+                }
+            }
+        }
+    }
+
+    _reindexRow(row, nextValues) {
+        if (!(row instanceof DataRow)) {
+            return;
+        }
+        if (row.getRowState() === DataRowState.DELETED || row.getRowState() === DataRowState.DETACHED) {
+            return;
+        }
+
+        const pk = this._table.columns.getPrimaryKey();
+        if (pk.length > 0) {
+            const newKeyValues = pk.map((name) => nextValues[name]);
+            if (newKeyValues.some((v) => v === null || v === undefined)) {
+                throw new ConstraintViolationError(
+                    `Primary key '${pk.join(",")}' cannot contain null values`
+                );
+            }
+            const newKey = this._serializeKeyValues(newKeyValues);
+            const existing = this._pkIndex.get(newKey);
+            if (existing && existing !== row) {
+                throw new DuplicatePrimaryKeyError(
+                    `Duplicate primary key (${pk.join(",")}): ${newKeyValues.join(",")}`
+                );
+            }
+        }
+
+        for (const [columnName, index] of this._uniqueIndexes.entries()) {
+            const newValueKey = this._serializeIndexValue(nextValues[columnName]);
+            if (newValueKey === null) {
+                continue;
+            }
+            const existing = index.get(newValueKey);
+            if (existing && existing !== row) {
+                throw new ConstraintViolationError(
+                    `Constraint violation: duplicate value for unique column '${columnName}'`
+                );
+            }
+        }
+
+        if (pk.length > 0) {
+            const oldKeyValues = pk.map((name) => row.get(name));
+            const oldKey = this._serializeKeyValues(oldKeyValues);
+            const newKeyValues = pk.map((name) => nextValues[name]);
+            const newKey = this._serializeKeyValues(newKeyValues);
+            if (oldKey !== newKey) {
+                if (this._pkIndex.get(oldKey) === row) {
+                    this._pkIndex.delete(oldKey);
+                }
+                this._pkIndex.set(newKey, row);
+            }
+        }
+
+        for (const [columnName, index] of this._uniqueIndexes.entries()) {
+            const oldValueKey = this._serializeIndexValue(row.get(columnName));
+            const newValueKey = this._serializeIndexValue(nextValues[columnName]);
+
+            if (oldValueKey !== null && oldValueKey !== newValueKey && index.get(oldValueKey) === row) {
+                index.delete(oldValueKey);
+            }
+            if (newValueKey !== null) {
+                index.set(newValueKey, row);
             }
         }
     }

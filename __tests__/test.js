@@ -131,6 +131,53 @@ test('unique: true prevents duplicates', () => {
     assert.throws(() => users.addRow({ email: 'a@test.com' }), ConstraintViolationError);
 });
 
+test('unique index ignores DELETED rows (reuse unique values after delete)', () => {
+    const users = new DataTable('Users');
+    users.addColumn('email', 'string', { unique: true });
+
+    const row = users.addRow({ email: 'a@test.com' });
+    users.acceptChanges();
+    row.delete();
+
+    users.addRow({ email: 'a@test.com' });
+    assert.equal(users.rows.count, 2);
+});
+
+test('primary key index updates when changing PK values', () => {
+    const users = new DataTable('Users');
+    users.addColumn('id', 'number', { primaryKey: true });
+    users.addColumn('email', 'string');
+
+    const a = users.addRow({ id: 1, email: 'a@test.com' });
+    const b = users.addRow({ id: 2, email: 'b@test.com' });
+    users.acceptChanges();
+
+    assert.throws(() => b.set('id', 1), DuplicatePrimaryKeyError);
+    assert.equal(a.get('id'), 1);
+    assert.equal(b.get('id'), 2);
+});
+
+test('computed columns (expression function) are evaluated and read-only', () => {
+    const table = new DataTable('T');
+    table.addColumn('a', 'number');
+    table.addColumn('b', 'number');
+    table.addColumn('sum', 'number', {
+        expression: (row) => (row.a ?? 0) + (row.b ?? 0)
+    });
+
+    const row = table.newRow();
+    row.set('a', 1);
+    row.set('b', 2);
+    assert.equal(row.get('sum'), 3);
+    assert.throws(() => row.set('sum', 10), ReadOnlyColumnError);
+
+    table.rows.add(row);
+    assert.equal(table.rows[0].get('sum'), 3);
+
+    const objects = table.toObjects();
+    assert.deepEqual(objects, [{ a: 1, b: 2, sum: 3 }]);
+});
+
 test('primary key (single) prevents duplicates and supports find()', () => {
     const users = new DataTable('Users');
     users.addColumn('id', 'number', { primaryKey: true });
