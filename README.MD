@@ -280,6 +280,33 @@ const changeSet = users.getChangeSet();
 console.log(changeSet.modified[0].changedColumns);
 ```
 
+You can also apply a change set to another table or dataset (useful for sync and patch workflows):
+
+```javascript
+const source = DataTable.fromObjects([
+    { id: 1, name: 'Alice' },
+    { id: 2, name: 'Bob' }
+], { tableName: 'Users', primaryKey: 'id' });
+
+source.acceptChanges();
+source.find(1).set('name', 'Alice Updated');
+source.find(2).delete();
+source.addRow({ id: 3, name: 'Cara' });
+
+const changeSet = source.getChangeSet();
+
+const target = DataTable.fromObjects([
+    { id: 1, name: 'Alice' },
+    { id: 2, name: 'Bob' }
+], { tableName: 'Users', primaryKey: 'id' });
+
+target.applyChangeSet(changeSet, {
+    missingRowAction: 'error',
+    conflictPolicy: 'overwrite',
+    strict: true
+});
+```
+
 You can also import the change-tracking helpers directly:
 
 ```javascript
@@ -295,9 +322,13 @@ const dataSetChanges = DataSetChangeSet.fromDataSet(dataSet);
 ## Features
 
 - Strongly typed columns
+- Computed columns via `expression: (row) => ...`
 - Row management
 - Sorting and filtering
 - Data validation
+- Fast primary key lookups and unique checks (internal indexes)
+- Case-sensitive or case-insensitive column lookup via `dataTable.caseSensitive`
+- ChangeSet apply for sync/patch workflows (`applyChangeSet()`)
 - Query result loading
 - Database integration
 - Enterprise-style merge for DataTable and DataSet
@@ -313,6 +344,16 @@ const dataSetChanges = DataSetChangeSet.fromDataSet(dataSet);
 #### Creating a Table
 ```javascript
 const dt = new DataTable('TableName');
+```
+
+Column name lookup is case-insensitive by default. You can enable full case-sensitive behavior:
+
+```javascript
+const dt = new DataTable('Users');
+dt.caseSensitive = true;
+
+dt.addColumn('Name', 'string');
+dt.addColumn('name', 'string');
 ```
 
 #### Adding Columns

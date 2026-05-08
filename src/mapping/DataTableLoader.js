@@ -21,6 +21,7 @@ const {
 class DataTableLoader {
     static load(table, rows, options = {}) {
         const opts = this._normalizeOptions(options);
+        opts.columnNameResolver = this._createLoadColumnNameResolver(table, opts.columnNameResolver);
         const records = normalizeRecords(this._ensureRows(rows), opts);
 
         if (opts.clearBeforeLoad || opts.append === false) {
@@ -47,6 +48,7 @@ class DataTableLoader {
 
     static addRecord(table, record, options = {}) {
         const opts = this._normalizeOptions(options);
+        opts.columnNameResolver = this._createInsertColumnNameResolver(table, opts.columnNameResolver);
         const normalized = opts.recordAlreadyNormalized
             ? record
             : normalizeRecord(record, opts);
@@ -106,6 +108,49 @@ class DataTableLoader {
         };
         opts.columnNameResolver = createColumnNameResolver(opts);
         return opts;
+    }
+
+    static _createLoadColumnNameResolver(table, baseResolver) {
+        const resolver = baseResolver || createColumnNameResolver({});
+        if (!table || table.caseSensitive === true) {
+            return resolver;
+        }
+
+        const known = new Map();
+        return function resolveColumnName(sourceName) {
+            const resolved = resolver(sourceName);
+            if (table.columns && typeof table.columns.resolveName === 'function') {
+                const canonical = table.columns.resolveName(resolved) || table.columns.resolveName(sourceName);
+                if (canonical) {
+                    return canonical;
+                }
+            }
+
+            const lower = String(resolved).toLowerCase();
+            if (known.has(lower)) {
+                return known.get(lower);
+            }
+            known.set(lower, String(resolved));
+            return String(resolved);
+        };
+    }
+
+    static _createInsertColumnNameResolver(table, baseResolver) {
+        const resolver = baseResolver || createColumnNameResolver({});
+        if (!table || table.caseSensitive === true) {
+            return resolver;
+        }
+
+        return function resolveColumnName(sourceName) {
+            const resolved = resolver(sourceName);
+            if (table.columns && typeof table.columns.resolveName === 'function') {
+                const canonical = table.columns.resolveName(resolved) || table.columns.resolveName(sourceName);
+                if (canonical) {
+                    return canonical;
+                }
+            }
+            return String(resolved);
+        };
     }
 
     static _ensureRows(rows) {

@@ -178,6 +178,108 @@ test('computed columns (expression function) are evaluated and read-only', () =>
     assert.deepEqual(objects, [{ a: 1, b: 2, sum: 3 }]);
 });
 
+test('caseSensitive: false resolves column names case-insensitively (get/contains/loadRows)', () => {
+    const users = new DataTable('Users');
+    users.addColumn('id', 'number', { primaryKey: true });
+    users.addColumn('name', 'string');
+
+    assert.equal(users.columnExists('ID'), true);
+    assert.equal(users.columns.get('ID').columnName, 'id');
+
+    users.loadRows([{ ID: 1, NAME: 'Mario' }], {
+        clearBeforeLoad: true,
+        autoCreateColumns: false,
+        inferSchema: false
+    });
+
+    const row = users.find(1);
+    assert.notEqual(row, null);
+    assert.equal(row.get('name'), 'Mario');
+    assert.equal(row.get('NAME'), 'Mario');
+});
+
+test('caseSensitive: true makes column lookup case-sensitive and allows same-name-different-case', () => {
+    const table = new DataTable('T');
+    table.caseSensitive = true;
+    table.addColumn('Name', 'string');
+    table.addColumn('name', 'string');
+
+    assert.equal(table.columnExists('Name'), true);
+    assert.equal(table.columnExists('name'), true);
+});
+
+test('caseSensitive toggle rebuilds column name index', () => {
+    const table = new DataTable('T');
+    table.addColumn('ID', 'number');
+
+    assert.equal(table.columnExists('id'), true);
+
+    table.caseSensitive = true;
+    assert.equal(table.columnExists('id'), false);
+    assert.equal(table.columnExists('ID'), true);
+
+    table.caseSensitive = false;
+    assert.equal(table.columnExists('id'), true);
+});
+
+test('DataTable.applyChangeSet applies added/modified/deleted by primary key', () => {
+    const target = DataTable.fromObjects([
+        { id: 1, name: 'Alice' },
+        { id: 2, name: 'Bob' }
+    ], { tableName: 'Users', primaryKey: 'id' });
+
+    const source = target.clone();
+    source.find(1).set('name', 'Alice Updated');
+    source.find(2).delete();
+    source.addRow({ id: 3, name: 'Cara' });
+
+    const changeSet = source.getChangeSet();
+    const result = target.applyChangeSet(changeSet, { strict: true, missingRowAction: 'error', conflictPolicy: 'overwrite' });
+
+    assert.equal(result.appliedAdded, 1);
+    assert.equal(result.appliedModified, 1);
+    assert.equal(result.appliedDeleted, 1);
+    assert.equal(target.find(1).get('name'), 'Alice Updated');
+    assert.equal(target.find(2), null);
+    assert.equal(target.find(3).get('name'), 'Cara');
+});
+
+test('DataTable.applyChangeSet supports primary key changes via originalKey', () => {
+    const target = DataTable.fromObjects([
+        { id: 1, name: 'Alice' }
+    ], { tableName: 'Users', primaryKey: 'id' });
+
+    const source = target.clone();
+    source.find(1).set('id', 10);
+    source.find(10).set('name', 'Alice Moved');
+
+    const changeSet = source.getChangeSet();
+    target.applyChangeSet(changeSet, { strict: true, missingRowAction: 'error', conflictPolicy: 'overwrite' });
+
+    assert.equal(target.find(1), null);
+    assert.equal(target.find(10).get('name'), 'Alice Moved');
+});
+
+test('DataSet.applyChangeSet applies table changesets', () => {
+    const target = new DataSet('CRM');
+    const users = target.addTable('Users');
+    users.addColumn('id', 'number', { primaryKey: true });
+    users.addColumn('name', 'string');
+    users.addRow({ id: 1, name: 'Mario' });
+    users.acceptChanges();
+
+    const source = target.clone();
+    source.table('Users').find(1).set('name', 'Mario Updated');
+    source.table('Users').addRow({ id: 2, name: 'Laura' });
+
+    const changeSet = source.getChangeSet();
+    const result = target.applyChangeSet(changeSet, { strict: true, missingTableAction: 'error', missingRowAction: 'error' });
+
+    assert.equal(result.appliedTables.length, 1);
+    assert.equal(target.table('Users').find(1).get('name'), 'Mario Updated');
+    assert.equal(target.table('Users').find(2).get('name'), 'Laura');
+});
+
 test('primary key (single) prevents duplicates and supports find()', () => {
     const users = new DataTable('Users');
     users.addColumn('id', 'number', { primaryKey: true });

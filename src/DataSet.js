@@ -180,6 +180,44 @@ class DataSet {
         return DataSetChangeSet.fromDataSet(this, options);
     }
 
+    applyChangeSet(changeSet, options = {}) {
+        const opts = normalizeApplyDataSetChangeSetOptions(options);
+        const normalized = normalizeDataSetChangeSet(changeSet);
+
+        if (opts.strict === true) {
+            if (normalized.dataSetName && this.dataSetName && normalized.dataSetName !== this.dataSetName) {
+                throw new SchemaMismatchError(
+                    `applyChangeSet() dataSetName mismatch: '${normalized.dataSetName}' -> '${this.dataSetName}'`
+                );
+            }
+        }
+
+        const result = {
+            dataSetName: this.dataSetName,
+            appliedTables: [],
+            skippedTables: []
+        };
+
+        for (const tableChangeSet of normalized.tables) {
+            const tableName = tableChangeSet.tableName || '';
+            if (!this.hasTable(tableName)) {
+                if (opts.missingTableAction === 'error') {
+                    throw new SchemaMismatchError(`Missing target table '${tableName}'.`);
+                }
+                result.skippedTables.push(tableName);
+                continue;
+            }
+            const table = this.table(tableName);
+            const summary = table.applyChangeSet(tableChangeSet, opts);
+            result.appliedTables.push({
+                tableName,
+                summary
+            });
+        }
+
+        return result;
+    }
+
     /**
      * Merges another DataSet, or a single DataTable, into this DataSet.
      * Existing tables are merged by table name; missing tables follow missingSchemaAction.
@@ -350,6 +388,36 @@ class DataSet {
         
         return newDataSet;
     }
+}
+
+function normalizeApplyDataSetChangeSetOptions(options) {
+    const opts = options || {};
+    const missingTableAction = String(opts.missingTableAction || 'ignore').toLowerCase();
+    const allowed = ['ignore', 'error'];
+    if (!allowed.includes(missingTableAction)) {
+        throw new SchemaMismatchError(
+            `Invalid missingTableAction '${opts.missingTableAction}'. Expected: ${allowed.join(', ')}`
+        );
+    }
+    return {
+        missingTableAction,
+        missingRowAction: opts.missingRowAction,
+        conflictPolicy: opts.conflictPolicy,
+        strict: opts.strict === true
+    };
+}
+
+function normalizeDataSetChangeSet(changeSet) {
+    const raw = changeSet && typeof changeSet.toObject === 'function'
+        ? changeSet.toObject()
+        : changeSet;
+    if (!raw || typeof raw !== 'object') {
+        throw new SchemaMismatchError('Invalid changeSet for applyChangeSet().');
+    }
+    return {
+        dataSetName: raw.dataSetName || '',
+        tables: Array.isArray(raw.tables) ? raw.tables : []
+    };
 }
 
 module.exports = DataSet;

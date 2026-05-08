@@ -13,6 +13,32 @@ class DataColumnCollection {
     this._primaryKey = [];
   }
 
+  _normalizeName(name) {
+    const text = String(name);
+    if (this._table && this._table.caseSensitive === true) {
+      return text;
+    }
+    return text.toLowerCase();
+  }
+
+  resolveName(name) {
+    const key = this._normalizeName(name);
+    const column = this._columns.get(key);
+    return column ? column.columnName : null;
+  }
+
+  _rebuildNameIndex() {
+    const next = new Map();
+    for (const column of this._columns.values()) {
+      const key = this._normalizeName(column.columnName);
+      if (next.has(key)) {
+        throw new Error(`Column '${column.columnName}' already exists`);
+      }
+      next.set(key, column);
+    }
+    this._columns = next;
+  }
+
   /**
    * @param {DataColumn|string} columnOrName - DataColumn instance or name of the column to add
    * @param {string|null} [dataType=null] - Data type of the column (only used if columnOrName is a string)
@@ -25,13 +51,14 @@ class DataColumnCollection {
         ? columnOrName
         : new DataColumn(columnOrName, dataType, options);
 
-    if (this._columns.has(column.columnName)) {
+    const key = this._normalizeName(column.columnName);
+    if (this._columns.has(key)) {
       throw new Error(`Column '${column.columnName}' already exists`);
     }
 
     column._table = this._table;
     column.ordinal = this._columns.size;
-    this._columns.set(column.columnName, column);
+    this._columns.set(key, column);
 
     // Adds the column to all existing rows
     if (this._table.rows && this._table.rows._rows) {
@@ -65,16 +92,18 @@ class DataColumnCollection {
    * @throws {Error} If the column doesn't exist
    */
   remove(columnName) {
-    if (!this._columns.has(columnName)) {
+    const key = this._normalizeName(columnName);
+    const column = this._columns.get(key);
+    if (!column) {
       throw new Error(`Column '${columnName}' does not exist`);
     }
 
-    this._columns.delete(columnName);
+    this._columns.delete(key);
 
     // Removes column values ​​from all rows
     if (this._table.rows && this._table.rows._rows) {
       this._table.rows._rows.forEach((row) => {
-        delete row._values[columnName];
+        delete row._values[column.columnName];
       });
     }
 
@@ -94,7 +123,7 @@ class DataColumnCollection {
    * @returns {boolean} True if the column exists, false otherwise
    */
   contains(columnName) {
-    return this._columns.has(columnName);
+    return this._columns.has(this._normalizeName(columnName));
   }
 
   has(columnName) {
@@ -109,7 +138,7 @@ class DataColumnCollection {
       }
       return column;
     }
-    const column = this._columns.get(columnNameOrIndex);
+    const column = this._columns.get(this._normalizeName(columnNameOrIndex));
     if (!column) {
       throw new ColumnNotFoundError(`Column '${columnNameOrIndex}' does not exist`);
     }
@@ -148,28 +177,24 @@ class DataColumnCollection {
       return;
     }
 
-    for (const name of names) {
-      if (!this._columns.has(name)) {
-        throw new ColumnNotFoundError(`Column '${name}' does not exist`);
-      }
-    }
+    const resolvedNames = names.map((name) => this.get(name).columnName);
 
     for (const prev of this._primaryKey) {
-      const col = this._columns.get(prev);
+      const col = this._columns.get(this._normalizeName(prev));
       if (col) {
         col.isPrimaryKey = false;
       }
     }
 
-    this._primaryKey = [...names];
+    this._primaryKey = [...resolvedNames];
 
     for (const name of this._primaryKey) {
-      const col = this._columns.get(name);
+      const col = this._columns.get(this._normalizeName(name));
       col.isPrimaryKey = true;
       col.allowNull = false;
     }
     if (this._primaryKey.length === 1) {
-      const col = this._columns.get(this._primaryKey[0]);
+      const col = this._columns.get(this._normalizeName(this._primaryKey[0]));
       col.unique = true;
     }
 
@@ -186,7 +211,7 @@ class DataColumnCollection {
 
   clearPrimaryKey() {
     for (const prev of this._primaryKey) {
-      const col = this._columns.get(prev);
+      const col = this._columns.get(this._normalizeName(prev));
       if (col) {
         col.isPrimaryKey = false;
       }

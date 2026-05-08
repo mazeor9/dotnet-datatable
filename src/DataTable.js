@@ -26,7 +26,24 @@ class DataTable {
         this.tableName = tableName;
         this.rows = new DataRowCollection(this);
         this.columns = new DataColumnCollection(this);
-        this.caseSensitive = false;
+        this._caseSensitive = false;
+    }
+
+    get caseSensitive() {
+        return this._caseSensitive === true;
+    }
+
+    set caseSensitive(value) {
+        const next = value === true;
+        const prev = this._caseSensitive === true;
+        if (next === prev) {
+            this._caseSensitive = next;
+            return;
+        }
+        this._caseSensitive = next;
+        if (this.columns && typeof this.columns._rebuildNameIndex === 'function') {
+            this.columns._rebuildNameIndex();
+        }
     }
 
     /**
@@ -359,7 +376,10 @@ class DataTable {
             validateSchema: options.validateSchema !== false,
             ...options
         };
-        const normalizedRows = DataTableLoader.normalizeRows(rows, opts);
+        const normalizedRows = DataTableLoader.normalizeRows(rows, {
+            ...opts,
+            columnNameResolver: createMergeRowColumnNameResolver(this, opts.columnNameResolver)
+        });
         const result = {
             updatedRows: 0,
             insertedRows: 0,
@@ -1144,6 +1164,57 @@ class DataTable {
         return DataTableChangeSet.fromTable(this, options);
     }
 
+    applyChangeSet(changeSet, options = {}) {
+        const opts = normalizeApplyChangeSetOptions(options);
+        const normalized = normalizeDataTableChangeSet(changeSet);
+        const tablePk = this.getPrimaryKey();
+
+        if (opts.strict === true) {
+            if (normalized.tableName && this.tableName && normalized.tableName !== this.tableName) {
+                throw new SchemaMismatchError(
+                    `applyChangeSet() tableName mismatch: '${normalized.tableName}' -> '${this.tableName}'`
+                );
+            }
+            if (Array.isArray(normalized.primaryKey) && normalized.primaryKey.length > 0 && tablePk.length > 0) {
+                if (!areStringArraysEqual(normalized.primaryKey, tablePk)) {
+                    throw new SchemaMismatchError(
+                        `applyChangeSet() primaryKey mismatch: '${normalized.primaryKey.join(",")}' -> '${tablePk.join(",")}'`
+                    );
+                }
+            }
+        }
+
+        if (tablePk.length === 0) {
+            throw new SchemaMismatchError('applyChangeSet() requires a primary key on the target DataTable.');
+        }
+
+        const summary = {
+            tableName: this.tableName,
+            appliedAdded: 0,
+            appliedModified: 0,
+            appliedDeleted: 0,
+            skipped: 0
+        };
+
+        for (const change of normalized.added) {
+            const outcome = applyRowChange(this, change, tablePk, opts);
+            if (outcome === 'applied') summary.appliedAdded++;
+            else summary.skipped++;
+        }
+        for (const change of normalized.modified) {
+            const outcome = applyRowChange(this, change, tablePk, opts);
+            if (outcome === 'applied') summary.appliedModified++;
+            else summary.skipped++;
+        }
+        for (const change of normalized.deleted) {
+            const outcome = applyRowChange(this, change, tablePk, opts);
+            if (outcome === 'applied') summary.appliedDeleted++;
+            else summary.skipped++;
+        }
+
+        return summary;
+    }
+
     /**
      * Gets rows by their state
      * @param {string} state - Row state to filter by
@@ -1237,11 +1308,194 @@ class DataTable {
 
 }
 
+function createMergeRowColumnNameResolver(table, baseResolver) {
+    const resolver = typeof baseResolver === 'function' ? baseResolver : (name) => String(name);
+    if (!table || table.caseSensitive === true) {
+        return resolver;
+    }
+    const known = new Map();
+    return function resolveColumnName(sourceName) {
+        const resolved = resolver(sourceName);
+        if (table.columns && typeof table.columns.resolveName === 'function') {
+            const canonical = table.columns.resolveName(resolved) || table.columns.resolveName(sourceName);
+            if (canonical) {
+                return canonical;
+            }
+        }
+        const lower = String(resolved).toLowerCase();
+        if (known.has(lower)) {
+            return known.get(lower);
+        }
+        known.set(lower, String(resolved));
+        return String(resolved);
+    };
+}
+
 function normalizePrimaryKey(primaryKey) {
     if (!primaryKey) {
         return [];
     }
     return Array.isArray(primaryKey) ? primaryKey : [primaryKey];
+}
+
+function normalizeApplyChangeSetOptions(options) {
+    const opts = options || {};
+    const missingRowAction = String(opts.missingRowAction || 'ignore').toLowerCase();
+    const conflictPolicy = String(opts.conflictPolicy || 'overwrite').toLowerCase();
+    const allowedMissing = ['ignore', 'add', 'error'];
+    const allowedConflict = ['overwrite', 'preserve', 'error'];
+
+    if (!allowedMissing.includes(missingRowAction)) {
+        throw new SchemaMismatchError(
+            `Invalid missingRowAction '${opts.missingRowAction}'. Expected: ${allowedMissing.join(', ')}`
+        );
+    }
+    if (!allowedConflict.includes(conflictPolicy)) {
+        throw new SchemaMismatchError(
+            `Invalid conflictPolicy '${opts.conflictPolicy}'. Expected: ${allowedConflict.join(', ')}`
+        );
+    }
+
+    return {
+        missingRowAction,
+        conflictPolicy,
+        strict: opts.strict === true
+    };
+}
+
+function normalizeDataTableChangeSet(changeSet) {
+    const raw = changeSet && typeof changeSet.toObject === 'function'
+        ? changeSet.toObject()
+        : changeSet;
+    if (!raw || typeof raw !== 'object') {
+        throw new SchemaMismatchError('Invalid changeSet for applyChangeSet().');
+    }
+    return {
+        tableName: raw.tableName || '',
+        primaryKey: Array.isArray(raw.primaryKey) ? raw.primaryKey.map(String) : [],
+        added: Array.isArray(raw.added) ? raw.added : [],
+        modified: Array.isArray(raw.modified) ? raw.modified : [],
+        deleted: Array.isArray(raw.deleted) ? raw.deleted : []
+    };
+}
+
+function areStringArraysEqual(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        if (String(a[i]) !== String(b[i])) return false;
+    }
+    return true;
+}
+
+function applyRowChange(table, change, primaryKey, options) {
+    const state = String(change?.state || '').toUpperCase();
+    if (![DataRowState.ADDED, DataRowState.MODIFIED, DataRowState.DELETED].includes(state)) {
+        if (options.strict === true) {
+            throw new SchemaMismatchError(`Invalid change state '${change?.state}'`);
+        }
+        return 'skipped';
+    }
+
+    const key = change && change.key && typeof change.key === 'object' ? change.key : null;
+    const originalKey = change && change.originalKey && typeof change.originalKey === 'object' ? change.originalKey : null;
+    const values = change && change.values && typeof change.values === 'object' ? change.values : {};
+    const originalValues = change && change.originalValues && typeof change.originalValues === 'object' ? change.originalValues : null;
+
+    let row = null;
+    if (key) {
+        row = findByKeyObject(table, primaryKey, key);
+    }
+    if (!row && originalKey) {
+        row = findByKeyObject(table, primaryKey, originalKey);
+    }
+
+    if (!row) {
+        if (state === DataRowState.ADDED) {
+            const inserted = table.newRow();
+            applyValuesToRow(table, inserted, values, options);
+            table.rows.add(inserted);
+            return 'applied';
+        }
+        if (state === DataRowState.DELETED && options.missingRowAction === 'ignore') {
+            return 'skipped';
+        }
+        if (options.missingRowAction === 'error') {
+            throw new SchemaMismatchError(`Missing target row for ${state} change.`);
+        }
+        if (options.missingRowAction !== 'add') {
+            return 'skipped';
+        }
+
+        const inserted = table.newRow();
+        applyValuesToRow(table, inserted, values, options);
+        table.rows.add(inserted);
+
+        if (state === DataRowState.DELETED) {
+            inserted.delete();
+            return 'applied';
+        }
+
+        if (state === DataRowState.MODIFIED) {
+            if (originalValues) {
+                inserted._originalValues = cloneValues(originalValues);
+            } else {
+                inserted._originalValues = cloneValues(inserted._values);
+            }
+            inserted._setRowState(DataRowState.MODIFIED);
+            return 'applied';
+        }
+
+        return 'applied';
+    }
+
+    if (options.conflictPolicy === 'preserve' && row.hasChanges()) {
+        return 'skipped';
+    }
+    if (options.conflictPolicy === 'error' && row.hasChanges()) {
+        throw new SchemaMismatchError('Row has local changes.');
+    }
+
+    if (state === DataRowState.DELETED) {
+        row.delete();
+        return 'applied';
+    }
+
+    const beforeState = row.getRowState();
+    applyValuesToRow(table, row, values, options);
+
+    if (state === DataRowState.MODIFIED) {
+        if (originalValues && beforeState === DataRowState.UNCHANGED) {
+            row._originalValues = cloneValues(originalValues);
+            row._setRowState(DataRowState.MODIFIED);
+        }
+    }
+
+    return 'applied';
+}
+
+function findByKeyObject(table, primaryKey, keyObject) {
+    const keyValues = primaryKey.map((name) => keyObject[name]);
+    if (keyValues.some((v) => v === null || v === undefined)) {
+        return null;
+    }
+    const key = primaryKey.length === 1 ? keyValues[0] : keyValues;
+    return table.find(key);
+}
+
+function applyValuesToRow(table, row, values, options) {
+    for (const [sourceName, value] of Object.entries(values)) {
+        if (!table.columnExists(sourceName)) {
+            if (options.strict === true) {
+                throw new SchemaMismatchError(`Column '${sourceName}' does not exist in target DataTable.`);
+            }
+            continue;
+        }
+        const column = table.columns.get(sourceName);
+        if (typeof column.expression === 'function') {
+            continue;
+        }
+        row.set(column.columnName, value);
+    }
 }
 
 function mapOutputColumnName(columnName, mapping) {

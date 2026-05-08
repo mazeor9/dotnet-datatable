@@ -11,7 +11,13 @@ import type {
   DebugStringOptions,
   DebugViewOptions
 } from './debug';
-import type { ChangeSetOptions, DataSetChangeSet, DataTableChangeSet } from './change-tracking';
+import type {
+  ChangeSetOptions,
+  DataSetChangeSet,
+  DataSetChangeSetObject,
+  DataTableChangeSet,
+  DataTableChangeSetObject
+} from './change-tracking';
 import type { QueryResultMapOptions } from './mapping';
 
 export type DataRecord = Record<string, unknown>;
@@ -97,6 +103,30 @@ export interface MergeRowsOptions extends DataTableLoadOptions {
 export interface DataTableMergeOptions {
   preserveChanges?: boolean;
   missingSchemaAction?: 'add' | 'ignore' | 'error' | string;
+}
+
+export interface ApplyChangeSetOptions {
+  missingRowAction?: 'ignore' | 'add' | 'error' | string;
+  conflictPolicy?: 'overwrite' | 'preserve' | 'error' | string;
+  strict?: boolean;
+}
+
+export interface ApplyChangeSetResult {
+  tableName: string;
+  appliedAdded: number;
+  appliedModified: number;
+  appliedDeleted: number;
+  skipped: number;
+}
+
+export interface ApplyDataSetChangeSetOptions extends ApplyChangeSetOptions {
+  missingTableAction?: 'ignore' | 'error' | string;
+}
+
+export interface ApplyDataSetChangeSetResult {
+  dataSetName: string;
+  appliedTables: Array<{ tableName: string; summary: ApplyChangeSetResult }>;
+  skippedTables: string[];
 }
 
 export interface DataTableMergeResult {
@@ -363,6 +393,7 @@ export class DataTable<TRow extends object = DataRecord> implements Iterable<Dat
   rejectChanges(): void;
   getChanges(rowState?: DataRowStateValue | string | null): Array<DataRow<TRow>>;
   getChangeSet(options?: ChangeSetOptions): DataTableChangeSet;
+  applyChangeSet(changeSet: DataTableChangeSet | DataTableChangeSetObject | unknown, options?: ApplyChangeSetOptions): ApplyChangeSetResult;
   getRowsByState(state: DataRowStateValue | string): Array<DataRow<TRow>>;
   hasChanges(): boolean;
   getChangesSummary(): {
@@ -464,6 +495,7 @@ export class DataSet {
   getParentRow(childRow: DataRow, relationName: string): DataRow | null;
   clear(): void;
   getChangeSet(options?: ChangeSetOptions): DataSetChangeSet;
+  applyChangeSet(changeSet: DataSetChangeSet | DataSetChangeSetObject | unknown, options?: ApplyDataSetChangeSetOptions): ApplyDataSetChangeSetResult;
   merge(source: DataSet | DataTable<any>, options?: DataTableMergeOptions): DataSetMergeResult;
   toJSON(): DataSetJson;
   toDebugView(options?: DebugViewOptions): DataSetDebugView;
