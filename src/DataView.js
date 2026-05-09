@@ -1,6 +1,7 @@
 const DataRowState = require('./enums/DataRowState');
 const { cloneValues } = require('./utils/typeUtils');
 const { DebugPreview, DebugTableSerializer, NodeInspectFormatter } = require('./debug');
+const { compilePredicate } = require('./utils/expressionUtils');
 
 class DataView {
     /**
@@ -177,8 +178,8 @@ function normalizeFilter(filter) {
         return (proxy, row) => filter(proxy, row);
     }
     if (typeof filter === 'string') {
-        const predicates = parseFilterString(filter);
-        return row => predicates.every(predicate => predicate(row));
+        const predicate = compilePredicate(filter);
+        return (proxy, row) => predicate(proxy, row, row?._table);
     }
     if (filter && typeof filter === 'object') {
         return row => Object.entries(filter).every(([columnName, expected]) => {

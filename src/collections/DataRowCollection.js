@@ -14,6 +14,7 @@ class DataRowCollection {
         this._rows = [];
         this._pkIndex = new Map();
         this._uniqueIndexes = new Map();
+        this._uniqueConstraintIndexes = new Map();
          // direct access to index column
          const func = (index) => this._rows[index];
         
@@ -70,10 +71,16 @@ class DataRowCollection {
             }
         }
 
+        if (this._table && typeof this._table._emit === 'function') {
+            this._table._emit('rowAdding', { row: dataRow });
+        }
         this._validateRowConstraints(dataRow);
         dataRow._attachToTable(this._table);
         this._rows.push(dataRow);
         this._indexRow(dataRow);
+        if (this._table && typeof this._table._emit === 'function') {
+            this._table._emit('rowAdded', { row: dataRow });
+        }
         return dataRow;
     }
 
@@ -83,10 +90,16 @@ class DataRowCollection {
     remove(row) {
         const index = this._rows.indexOf(row);
         if (index !== -1) {
+            if (this._table && typeof this._table._emit === 'function') {
+                this._table._emit('rowRemoving', { row });
+            }
             this._unindexRow(row);
             this._rows.splice(index, 1);
             if (row instanceof DataRow) {
                 row._setRowState(DataRowState.DETACHED);
+            }
+            if (this._table && typeof this._table._emit === 'function') {
+                this._table._emit('rowRemoved', { row });
             }
         }
     }
@@ -97,14 +110,23 @@ class DataRowCollection {
     removeAt(index) {
         if (index >= 0 && index < this._rows.length) {
             const [row] = this._rows.splice(index, 1);
+            if (this._table && typeof this._table._emit === 'function') {
+                this._table._emit('rowRemoving', { row });
+            }
             this._unindexRow(row);
             if (row instanceof DataRow) {
                 row._setRowState(DataRowState.DETACHED);
+            }
+            if (this._table && typeof this._table._emit === 'function') {
+                this._table._emit('rowRemoved', { row });
             }
         }
     }
 
     clear() {
+        if (this._table && typeof this._table._emit === 'function') {
+            this._table._emit('tableClearing', { table: this._table });
+        }
         for (const row of this._rows) {
             if (row instanceof DataRow) {
                 row._setRowState(DataRowState.DETACHED);
@@ -112,6 +134,9 @@ class DataRowCollection {
         }
         this._rows = [];
         this._rebuildIndexes();
+        if (this._table && typeof this._table._emit === 'function') {
+            this._table._emit('tableCleared', { table: this._table });
+        }
     }
 
     get count() {
@@ -202,7 +227,7 @@ class DataRowCollection {
         const pk = this._table.columns.getPrimaryKey();
 
         for (const col of columns) {
-            if (typeof col.expression === 'function') {
+            if (col.isComputed) {
                 continue;
             }
             const value = row.get(col.columnName);
@@ -228,7 +253,7 @@ class DataRowCollection {
 
         for (const col of columns) {
             if (!col.unique) continue;
-            if (typeof col.expression === 'function') continue;
+            if (col.isComputed) continue;
             if (pk.length > 1 && pk.includes(col.columnName)) continue;
             const value = row.get(col.columnName);
             if (value === null || value === undefined) continue;
@@ -256,13 +281,14 @@ class DataRowCollection {
     _rebuildIndexes() {
         this._pkIndex = new Map();
         this._uniqueIndexes = new Map();
+        this._uniqueConstraintIndexes = new Map();
 
         const pk = this._table?.columns?.getPrimaryKey?.() ?? [];
         const columns = this._table?.columns?.toArray?.() ?? [];
 
         for (const col of columns) {
             if (!col || !col.unique) continue;
-            if (typeof col.expression === 'function') continue;
+            if (col.isComputed) continue;
             if (pk.length > 1 && pk.includes(col.columnName)) continue;
             if (pk.length === 1 && pk[0] === col.columnName) continue;
             this._uniqueIndexes.set(col.columnName, new Map());
@@ -270,6 +296,19 @@ class DataRowCollection {
 
         for (const row of this._rows) {
             this._indexRow(row);
+        }
+    }
+
+    _rebuildUniqueConstraintIndexes() {
+        this._uniqueConstraintIndexes = new Map();
+        const constraints = typeof this._table?.getUniqueConstraints === 'function'
+            ? this._table.getUniqueConstraints()
+            : [];
+        for (const constraint of constraints) {
+            if (!constraint || !Array.isArray(constraint.columns) || constraint.columns.length === 0) {
+                continue;
+            }
+            this._uniqueConstraintIndexes.set(constraint.name, new Map());
         }
     }
 
@@ -338,6 +377,9 @@ class DataRowCollection {
             }
             index.set(valueKey, row);
         }
+
+        this._indexUniqueConstraints(row);
+        this._enforceCheckConstraints(row, row._values);
     }
 
     _unindexRow(row) {
@@ -366,6 +408,8 @@ class DataRowCollection {
                 index.delete(valueKey);
             }
         }
+
+        this._unindexUniqueConstraints(row);
     }
 
     _onRowValueChange(row, columnName, oldValue, newValue) {
@@ -434,6 +478,10 @@ class DataRowCollection {
                 }
             }
         }
+
+        const nextValues = { ...row._values, [columnName]: newValue };
+        this._reindexUniqueConstraints(row, nextValues);
+        this._enforceCheckConstraints(row, nextValues);
     }
 
     _reindexRow(row, nextValues) {
@@ -474,6 +522,9 @@ class DataRowCollection {
             }
         }
 
+        this._validateUniqueConstraintsForValues(row, nextValues);
+        this._enforceCheckConstraints(row, nextValues);
+
         if (pk.length > 0) {
             const oldKeyValues = pk.map((name) => row.get(name));
             const oldKey = this._serializeKeyValues(oldKeyValues);
@@ -497,6 +548,136 @@ class DataRowCollection {
             if (newValueKey !== null) {
                 index.set(newValueKey, row);
             }
+        }
+
+        this._applyUniqueConstraintsIndexUpdate(row, nextValues);
+    }
+
+    _indexUniqueConstraints(row) {
+        const constraints = typeof this._table?.getUniqueConstraints === 'function'
+            ? this._table.getUniqueConstraints()
+            : [];
+        if (constraints.length === 0) {
+            return;
+        }
+        if (this._uniqueConstraintIndexes.size === 0) {
+            this._rebuildUniqueConstraintIndexes();
+        }
+        for (const constraint of constraints) {
+            const index = this._uniqueConstraintIndexes.get(constraint.name);
+            if (!index) continue;
+            const keyValues = constraint.columns.map((name) => row.get(name));
+            if (keyValues.some((v) => v === null || v === undefined)) {
+                continue;
+            }
+            const key = this._serializeKeyValues(keyValues);
+            const existing = index.get(key);
+            if (existing && existing !== row) {
+                throw new ConstraintViolationError(
+                    `Constraint violation: duplicate key for unique constraint '${constraint.name}'`
+                );
+            }
+            index.set(key, row);
+        }
+    }
+
+    _unindexUniqueConstraints(row) {
+        const constraints = typeof this._table?.getUniqueConstraints === 'function'
+            ? this._table.getUniqueConstraints()
+            : [];
+        if (constraints.length === 0 || this._uniqueConstraintIndexes.size === 0) {
+            return;
+        }
+        for (const constraint of constraints) {
+            const index = this._uniqueConstraintIndexes.get(constraint.name);
+            if (!index) continue;
+            const keyValues = constraint.columns.map((name) => row.get(name));
+            if (keyValues.some((v) => v === null || v === undefined)) {
+                continue;
+            }
+            const key = this._serializeKeyValues(keyValues);
+            if (index.get(key) === row) {
+                index.delete(key);
+            }
+        }
+    }
+
+    _reindexUniqueConstraints(row, nextValues) {
+        if (row.getRowState() === DataRowState.DETACHED) {
+            return;
+        }
+        this._validateUniqueConstraintsForValues(row, nextValues);
+        this._applyUniqueConstraintsIndexUpdate(row, nextValues);
+    }
+
+    _validateUniqueConstraintsForValues(row, nextValues) {
+        const constraints = typeof this._table?.getUniqueConstraints === 'function'
+            ? this._table.getUniqueConstraints()
+            : [];
+        if (constraints.length === 0) {
+            return;
+        }
+        if (this._uniqueConstraintIndexes.size === 0) {
+            this._rebuildUniqueConstraintIndexes();
+            for (const r of this._rows) {
+                this._indexUniqueConstraints(r);
+            }
+        }
+        for (const constraint of constraints) {
+            const index = this._uniqueConstraintIndexes.get(constraint.name);
+            if (!index) continue;
+            const keyValues = constraint.columns.map((name) => nextValues[name]);
+            if (keyValues.some((v) => v === null || v === undefined)) {
+                continue;
+            }
+            const key = this._serializeKeyValues(keyValues);
+            const existing = index.get(key);
+            if (existing && existing !== row) {
+                throw new ConstraintViolationError(
+                    `Constraint violation: duplicate key for unique constraint '${constraint.name}'`
+                );
+            }
+        }
+    }
+
+    _applyUniqueConstraintsIndexUpdate(row, nextValues) {
+        const constraints = typeof this._table?.getUniqueConstraints === 'function'
+            ? this._table.getUniqueConstraints()
+            : [];
+        if (constraints.length === 0 || this._uniqueConstraintIndexes.size === 0) {
+            return;
+        }
+        for (const constraint of constraints) {
+            const index = this._uniqueConstraintIndexes.get(constraint.name);
+            if (!index) continue;
+
+            const oldKeyValues = constraint.columns.map((name) => row.get(name, 'current'));
+            const newKeyValues = constraint.columns.map((name) => nextValues[name]);
+
+            if (!oldKeyValues.some((v) => v === null || v === undefined)) {
+                const oldKey = this._serializeKeyValues(oldKeyValues);
+                if (index.get(oldKey) === row) {
+                    index.delete(oldKey);
+                }
+            }
+            if (!newKeyValues.some((v) => v === null || v === undefined)) {
+                const newKey = this._serializeKeyValues(newKeyValues);
+                index.set(newKey, row);
+            }
+        }
+    }
+
+    _enforceCheckConstraints(row, values) {
+        if (!this._table || typeof this._table._shouldEnforceConstraints !== 'function' || this._table._shouldEnforceConstraints() !== true) {
+            return;
+        }
+        if (typeof this._table._evaluateCheckConstraints !== 'function') {
+            return;
+        }
+        this._table._evaluateCheckConstraints(row, values);
+        const dataSet = this._table._dataSet;
+        if (dataSet && typeof dataSet._evaluateForeignKeyConstraints === 'function') {
+            dataSet._evaluateForeignKeyConstraints(row, values);
         }
     }
 }

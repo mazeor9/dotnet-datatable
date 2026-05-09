@@ -1,4 +1,5 @@
 const { DebugTableSerializer, NodeInspectFormatter } = require('./debug');
+const { compileExpression } = require('./utils/expressionUtils');
 
 class DataColumn {
     constructor(columnName, dataType = null, allowNullOrOptions = undefined, defaultValue = undefined) {
@@ -26,6 +27,15 @@ class DataColumn {
         this.defaultValue = resolvedDefaultValue;
         this.caption = columnName;
         this.expression = options.expression ?? null;
+        if (typeof this.expression === 'string' && this.expression.trim() === '') {
+            this.expression = null;
+        }
+        this._expressionEvaluator = null;
+        if (typeof this.expression === 'function') {
+            this._expressionEvaluator = this.expression;
+        } else if (typeof this.expression === 'string') {
+            this._expressionEvaluator = compileExpression(this.expression);
+        }
         this.readOnly = options.readOnly ?? false;
         this.unique = options.unique ?? false;
         this.isPrimaryKey = options.primaryKey ?? options.isPrimaryKey ?? false;
@@ -34,7 +44,7 @@ class DataColumn {
         this.metadata = options.metadata ?? null;
         this._table = null;
 
-        if (typeof this.expression === 'function') {
+        if (typeof this._expressionEvaluator === 'function') {
             this.readOnly = true;
         }
 
@@ -49,7 +59,7 @@ class DataColumn {
     }
 
     get isComputed() {
-        return typeof this.expression === 'function';
+        return typeof this._expressionEvaluator === 'function';
     }
 
     toJSON() {

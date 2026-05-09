@@ -336,8 +336,9 @@ test('addRow(object) and addRow(array)', () => {
 
 test('clone() copies schema including options and primary key', () => {
     const users = new DataTable('Users');
-    users.addColumn('id', 'number', { allowNull: false, readOnly: true, defaultValue: 0, caption: 'ID', expression: 'id' });
+    users.addColumn('id', 'number', { allowNull: false, readOnly: true, defaultValue: 0, caption: 'ID' });
     users.addColumn('email', 'string', { unique: true, defaultValue: '' });
+    users.addColumn('emailUpper', 'string', { expression: 'UPPER(email)' });
     users.setPrimaryKey(['id']);
     users.addRow({ id: 1, email: 'a@test.com' });
 
@@ -349,7 +350,7 @@ test('clone() copies schema including options and primary key', () => {
     assert.equal(idCol.readOnly, true);
     assert.equal(idCol.defaultValue, 0);
     assert.equal(idCol.caption, 'ID');
-    assert.equal(idCol.expression, 'id');
+    assert.equal(idCol.expression, null);
 
     const emailCol = copy.columns.get('email');
     assert.equal(emailCol.unique, true);
@@ -357,6 +358,7 @@ test('clone() copies schema including options and primary key', () => {
 
     assert.equal(copy.rows.count, 1);
     assert.equal(copy.rows[0].get('email'), 'a@test.com');
+    assert.equal(copy.rows[0].get('emailUpper'), 'A@TEST.COM');
 });
 
 test('DataTable.merge updates by primary key, inserts missing rows, and adds missing schema', () => {
@@ -980,4 +982,104 @@ test('DataSetChangeSet collects changed tables only by default', () => {
     assert.equal(changeSet.count, 1);
     assert.deepEqual(changeSet.tables.map(table => table.tableName), ['Users']);
     assert.equal(changeSet.table('Departments'), null);
+});
+
+test('DataRow beginEdit/endEdit/cancelEdit and RowVersion access', () => {
+    const t = new DataTable('T');
+    t.addColumn('id', 'number', { allowNull: false });
+    t.addColumn('value', 'number');
+    t.setPrimaryKey('id');
+
+    const r = t.addRow({ id: 1, value: 10 });
+    r.acceptChanges();
+    assert.equal(r.getRowState(), DataRowState.UNCHANGED);
+
+    r.beginEdit();
+    r.set('value', 20);
+    assert.equal(r.get('value', 'current'), 10);
+    assert.equal(r.get('value', 'proposed'), 20);
+    assert.equal(r.get('value'), 20);
+
+    r.cancelEdit();
+    assert.equal(r.get('value'), 10);
+    assert.equal(r.getRowState(), DataRowState.UNCHANGED);
+
+    r.beginEdit();
+    r.set('value', 30);
+    r.endEdit();
+    assert.equal(r.get('value'), 30);
+    assert.equal(r.getRowState(), DataRowState.MODIFIED);
+    assert.equal(r.get('value', 'original'), 10);
+});
+
+test('UniqueConstraint (multi-column) prevents duplicates', () => {
+    const t = new DataTable('Pairs');
+    t.addColumn('a', 'number', { allowNull: false });
+    t.addColumn('b', 'number', { allowNull: false });
+    t.addUniqueConstraint(['a', 'b'], 'UQ_ab');
+
+    t.addRow({ a: 1, b: 1 });
+    assert.throws(() => t.addRow({ a: 1, b: 1 }));
+    t.addRow({ a: 1, b: 2 });
+});
+
+test('ForeignKeyConstraint cascade delete deletes child rows', () => {
+    const ds = new DataSet('DS');
+    const parents = ds.addTable(DataTable.fromObjects([{ id: 1 }], { tableName: 'Parents', primaryKey: 'id' }));
+    const children = ds.addTable(DataTable.fromObjects([{ id: 10, parentId: 1 }], { tableName: 'Children', primaryKey: 'id' }));
+
+    const rel = ds.addRelation('FK_Parents_Children', parents.columns.get('id'), children.columns.get('parentId'));
+    ds.addForeignKeyConstraint(rel.relationName, { deleteRule: 'cascade' });
+
+    const p = parents.find(1);
+    const c = children.find(10);
+    assert.equal(c.getRowState(), DataRowState.UNCHANGED);
+    p.delete();
+    assert.equal(p.getRowState(), DataRowState.DELETED);
+    assert.equal(c.getRowState(), DataRowState.DELETED);
+});
+
+test('DataView filter supports OR and parentheses via expression engine', () => {
+    const t = DataTable.fromObjects([
+        { id: 1, name: 'A' },
+        { id: 2, name: 'B' },
+        { id: 3, name: 'C' }
+    ], {
+        tableName: 'T',
+        primaryKey: 'id'
+    });
+
+    const rows = t.createView({ filter: "(id > 2) OR (name = 'A')" }).getRows();
+    const ids = rows.map((r) => r.get('id')).sort();
+    assert.deepEqual(ids, [1, 3]);
+});
+
+test('serialize/deserialize roundtrip preserves schema and row states', () => {
+    const t = DataTable.fromObjects([
+        { id: 1, name: 'A' },
+        { id: 2, name: 'B' }
+    ], { tableName: 'Users', primaryKey: 'id' });
+
+    t.find(1).set('name', 'A2');
+    t.find(2).delete();
+
+    const payload = t.serialize({ asObject: true });
+    const copy = DataTable.deserialize(payload);
+
+    assert.equal(copy.tableName, 'Users');
+    assert.deepEqual(copy.getPrimaryKey(), ['id']);
+    assert.equal(copy.find(1).get('name'), 'A2');
+    assert.equal(copy.find(2), null);
+    assert.equal(copy.getChanges().length, 2);
+});
+
+test('join() supports inner join', () => {
+    const a = DataTable.fromObjects([{ id: 1, a: 'x' }, { id: 2, a: 'y' }], { tableName: 'A', primaryKey: 'id' });
+    const b = DataTable.fromObjects([{ id: 2, b: 'z' }], { tableName: 'B', primaryKey: 'id' });
+
+    const joined = a.join(b, { on: 'id', type: 'inner' });
+    assert.equal(joined.rows.count, 1);
+    assert.equal(joined.rows[0].get('id'), 2);
+    assert.equal(joined.rows[0].get('a'), 'y');
+    assert.equal(joined.rows[0].get('b'), 'z');
 });

@@ -57,7 +57,7 @@ class DataTableLoader {
 
         const row = table.newRow();
         for (const column of table.columns) {
-            if (typeof column.expression === 'function') {
+            if (column.isComputed) {
                 continue;
             }
             if (!Object.prototype.hasOwnProperty.call(normalized, column.columnName)) {

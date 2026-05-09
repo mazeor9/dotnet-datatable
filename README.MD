@@ -28,16 +28,21 @@ A .NET-style DataTable library for JavaScript and Node.js. Build typed in-memory
 ## Features
 
 - Strongly typed columns
-- Computed columns via `expression: (row) => ...`
+- Computed columns via `expression` (string or function)
 - Row management
+- Row editing with row versions (`current/original/proposed`)
 - Sorting and filtering
 - Data validation
 - Fast primary key lookups and unique checks (internal indexes)
+- Unique / check constraints and DataSet foreign key constraints (optional enforcement)
+- ChangeSet apply + command generation for sync/patch workflows
 - Query result loading from plain objects and common SQL client result shapes
 - Database result mapping without database drivers or connections
 - Schema inference and original value tracking
 - Enterprise-style merge for DataTable and DataSet
 - Backend change tracking and broad provider result mapping
+- Full serialization/deserialization (schema + row state + original/proposed values)
+- In-memory relational helpers (join, groupBy, distinct, union)
 
 ## Table of Contents
 
@@ -329,6 +334,10 @@ const dataSetChanges = DataSetChangeSet.fromDataSet(dataSet);
 - Fast primary key lookups and unique checks (internal indexes)
 - Case-sensitive or case-insensitive column lookup via `dataTable.caseSensitive`
 - ChangeSet apply for sync/patch workflows (`applyChangeSet()`)
+- Row editing (`beginEdit/endEdit/cancelEdit`) and row versions (`get(..., 'original'|'current'|'proposed')`)
+- Computed columns via `expression` string or function
+- Multi-column unique constraints, check constraints and foreign key constraints
+- Command generation from ChangeSet (`getCommands()`)
 - Query result loading
 - Database integration
 - Enterprise-style merge for DataTable and DataSet
@@ -441,8 +450,11 @@ const age = row.item('age');     // Supported for backwards compatibility
 // Set value
 row.set('name', 'NewName');
 
-// Remove row
+// Remove row (physical removal from collection)
 dt.removeRow(0);
+
+// Mark row as deleted (change tracking)
+dt.deleteRow(0);
 
 // Clear all rows
 dt.clear();
@@ -459,6 +471,24 @@ dotnet-datatable provides comprehensive row state tracking to monitor changes to
 - `UNCHANGED`: Row with no pending changes
 
 Rows loaded with `DataTable.fromObjects()`, `fromRows()`, `fromQueryResult()` or `loadRows()` are initialized as `UNCHANGED` by default and keep a copy of their original values.
+
+#### Editing and Row Versions
+```javascript
+row.acceptChanges();
+
+row.beginEdit();
+row.set('name', 'Mario Updated');
+
+console.log(row.get('name', 'current'));   // old value
+console.log(row.get('name', 'proposed'));  // new value
+
+row.cancelEdit(); // discards proposed values
+
+row.beginEdit();
+row.set('name', 'Mario Updated');
+row.endEdit();    // commits values and sets MODIFIED if changed
+console.log(row.get('name', 'original'));  // original value
+```
 
 #### Individual Row State Operations
 ```javascript
@@ -844,6 +874,14 @@ const filtered = dt.findRows(row => {
 });
 ```
 
+DataView string filters are also supported and can use `AND/OR`, parentheses and simple functions:
+
+```javascript
+const view = dt.createView({
+  filter: "(age >= 18 AND active = true) OR (UPPER(name) = 'ADMIN')"
+});
+```
+
 All supported operators:
 - `$gt`: Greater than
 - `$gte`: Greater than or equal to
@@ -924,6 +962,9 @@ const r = dt.newRow();
 r.set('firstName', 'Mario');
 r.set('lastName', 'Rossi');
 console.log(r.get('fullName')); // "Mario Rossi"
+
+// Computed column via expression string (read-only)
+dt.addColumn('emailUpper', 'string', { expression: "UPPER(email)" });
 ```
 
 ### Table Manipulation
@@ -935,6 +976,20 @@ const newTable = dt.clone();
 for (const row of newTable) {
     console.log(row.get('name')); // using recommended get() method
 }
+
+// Select rows (DataRow[]) using DataView-like filter and optional sort
+const adults = dt.selectRows("age >= 18", "name asc");
+
+// Aggregates
+const total = dt.compute("SUM(amount)", "status = 'paid'");
+
+// Join and groupBy helpers
+const joined = dt.join(otherTable, { on: 'id', type: 'inner' });
+const groups = dt.groupBy(['status'], { total: { fn: 'SUM', column: 'amount' } });
+
+// Full roundtrip serialization (schema + row state + original/proposed values)
+const snapshot = dt.serialize();
+const restored = DataTable.deserialize(snapshot);
 ```
 
 ### DataSet Operations
@@ -981,6 +1036,16 @@ console.log(itEmployees); // [{ id: 1, name: 'John', departmentId: 2 }]
 const john = employees.findOne({ name: 'John' });
 const johnsDept = ds.getParentRow(john, 'EmpDeptRelation');
 console.log(johnsDept.get('name')); // 'IT'
+```
+
+Foreign key constraints (optional enforcement) can be attached to relations:
+
+```javascript
+ds.enforceConstraints = true;
+ds.addForeignKeyConstraint('EmpDeptRelation', {
+  deleteRule: 'restrict',   // or 'cascade' | 'setnull'
+  updateRule: 'cascade'     // or 'restrict' | 'setnull'
+});
 ```
 
 You can also build a DataSet directly from multiple query result arrays or SQL Server-style recordsets:

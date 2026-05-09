@@ -16,9 +16,11 @@ class DataRow {
         this._values = {};
         this._rowState = initialState;
         this._originalValues = {};
+        this._inEdit = false;
+        this._proposedValues = null;
 
         for (const column of table.columns) {
-            if (typeof column.expression === 'function') {
+            if (column.isComputed) {
                 continue;
             }
             this._values[column.columnName] = this._evaluateDefaultValue(column);
@@ -38,16 +40,17 @@ class DataRow {
 
     /**
      * @param {number|string} index - Numeric index or column name
+     * @param {string} [version] - 'current' | 'original' | 'proposed'
      * @returns {*} The value stored at the specified index or column name
      * @throws {Error} If the column doesn't exist
      */
-    get(index) {
+    get(index, version = undefined) {
         if (typeof index === 'number') {
             const column = this._table.columns.get(index);
-            return this._getByName(column.columnName, new Set());
+            return this._getByName(column.columnName, normalizeRowVersion(version, undefined), new Set());
         }
         const column = this._table.columns.get(index);
-        return this._getByName(column.columnName, new Set());
+        return this._getByName(column.columnName, normalizeRowVersion(version, undefined), new Set());
     }
 
     /**
@@ -69,12 +72,14 @@ class DataRow {
             throw new ColumnNotFoundError(`Column '${columnName}' does not exist`);
         }
 
-        if (typeof column.expression === 'function') {
+        if (column.isComputed) {
             throw new ReadOnlyColumnError(`Column '${columnName}' is read-only`);
         }
 
         if (column.readOnly && this._rowState !== DataRowState.DETACHED) {
-            if (!this._areEqual(this._values[columnName], value)) {
+            const current = this.get(columnName, 'current');
+            const proposed = this._inEdit ? this.get(columnName, 'proposed') : current;
+            if (!this._areEqual(proposed, value)) {
                 throw new ReadOnlyColumnError(`Column '${columnName}' is read-only`);
             }
             return;
@@ -96,9 +101,35 @@ class DataRow {
             throw new ConstraintViolationError(`Column '${columnName}' exceeds maxLength ${column.maxLength}`);
         }
 
-        const currentValue = this._values[columnName];
+        const currentValue = this.get(columnName, this._inEdit ? 'proposed' : 'current');
         if (this._areEqual(currentValue, coercedValue)) {
             return;
+        }
+
+        if (this._inEdit) {
+            if (!this._proposedValues) {
+                this._proposedValues = cloneValues(this._values);
+            }
+            this._proposedValues[columnName] = coercedValue;
+            return;
+        }
+
+        if (this._table && typeof this._table._emit === 'function') {
+            this._table._emit('columnChanging', {
+                row: this,
+                columnName,
+                oldValue: this._values[columnName],
+                newValue: coercedValue
+            });
+        }
+
+        const dataSet = this._table?._dataSet;
+        if (dataSet && typeof dataSet._onRowValueChange === 'function') {
+            dataSet._onRowValueChange(this, columnName, this._values[columnName], coercedValue);
+        }
+
+        if (this._table?.rows && typeof this._table.rows._onRowValueChange === 'function') {
+            this._table.rows._onRowValueChange(this, columnName, this._values[columnName], coercedValue);
         }
 
         if (this._rowState === DataRowState.UNCHANGED) {
@@ -106,11 +137,15 @@ class DataRow {
             this._rowState = DataRowState.MODIFIED;
         }
 
-        if (this._table?.rows && typeof this._table.rows._onRowValueChange === 'function') {
-            this._table.rows._onRowValueChange(this, columnName, currentValue, coercedValue);
-        }
-
         this._values[columnName] = coercedValue;
+
+        if (this._table && typeof this._table._emit === 'function') {
+            this._table._emit('columnChanged', {
+                row: this,
+                columnName,
+                value: coercedValue
+            });
+        }
     }
 
     toJSON() {
@@ -152,6 +187,8 @@ class DataRow {
             }
             this._values = restored;
             this._rowState = DataRowState.UNCHANGED;
+            this._inEdit = false;
+            this._proposedValues = null;
             return;
         }
 
@@ -161,12 +198,16 @@ class DataRow {
             if (this._table?.rows && typeof this._table.rows._indexRow === 'function') {
                 this._table.rows._indexRow(this);
             }
+            this._inEdit = false;
+            this._proposedValues = null;
             return;
         }
 
         if (this._rowState === DataRowState.ADDED) {
             this._detachFromTable();
             this._rowState = DataRowState.DETACHED;
+            this._inEdit = false;
+            this._proposedValues = null;
             return;
         }
     }
@@ -197,13 +238,25 @@ class DataRow {
         if (this._rowState === DataRowState.DELETED) {
             return;
         }
+        if (this._table && typeof this._table._emit === 'function') {
+            this._table._emit('rowDeleting', { row: this });
+        }
         if (this._rowState === DataRowState.UNCHANGED) {
             this._originalValues = cloneValues(this._values);
+        }
+        const dataSet = this._table?._dataSet;
+        if (dataSet && typeof dataSet._onRowDeleting === 'function') {
+            dataSet._onRowDeleting(this);
         }
         if (this._table?.rows && typeof this._table.rows._unindexRow === 'function') {
             this._table.rows._unindexRow(this);
         }
+        this._inEdit = false;
+        this._proposedValues = null;
         this._rowState = DataRowState.DELETED;
+        if (this._table && typeof this._table._emit === 'function') {
+            this._table._emit('rowDeleted', { row: this });
+        }
     }
 
     toObject() {
@@ -230,6 +283,59 @@ class DataRow {
         return this._originalValues;
     }
 
+    get proposedValues() {
+        return this._proposedValues;
+    }
+
+    beginEdit() {
+        if (this._rowState === DataRowState.DELETED) {
+            throw new InvalidRowStateError("Cannot edit a DELETED row");
+        }
+        if (!this._inEdit) {
+            this._proposedValues = cloneValues(this._values);
+            this._inEdit = true;
+        }
+        return this;
+    }
+
+    endEdit() {
+        if (!this._inEdit) {
+            return this;
+        }
+        const proposed = this._proposedValues ? cloneValues(this._proposedValues) : cloneValues(this._values);
+
+        const wasInEdit = this._inEdit;
+        this._inEdit = false;
+        try {
+            if (this._table?.rows && typeof this._table.rows._reindexRow === 'function') {
+                this._table.rows._reindexRow(this, proposed);
+            }
+        } finally {
+            this._inEdit = wasInEdit;
+        }
+
+        const before = this._values;
+        this._values = proposed;
+        this._proposedValues = null;
+        this._inEdit = false;
+
+        if (this._rowState === DataRowState.UNCHANGED) {
+            const changed = Object.keys(this._values).some((key) => !this._areEqual(before[key], this._values[key]));
+            if (changed) {
+                this._originalValues = cloneValues(before);
+                this._rowState = DataRowState.MODIFIED;
+            }
+        }
+
+        return this;
+    }
+
+    cancelEdit() {
+        this._inEdit = false;
+        this._proposedValues = null;
+        return this;
+    }
+
     _setRowState(state) {
         this._rowState = state;
     }
@@ -249,7 +355,7 @@ class DataRow {
     }
 
     _initializeNewColumn(column) {
-        if (typeof column.expression === 'function') {
+        if (column.isComputed) {
             return;
         }
         const value = this._evaluateDefaultValue(column);
@@ -370,9 +476,26 @@ class DataRow {
         return a === b;
     }
 
-    _getByName(columnName, evaluationStack) {
+    _getByName(columnName, version, evaluationStack) {
         const column = this._table.columns.get(columnName);
-        if (typeof column.expression !== 'function') {
+        const rowVersion = normalizeRowVersion(version, undefined);
+
+        if (!column.isComputed) {
+            if (rowVersion === 'original') {
+                return this._originalValues[column.columnName];
+            }
+            if (rowVersion === 'current') {
+                return this._values[column.columnName];
+            }
+            if (rowVersion === 'proposed') {
+                if (this._inEdit && this._proposedValues) {
+                    return this._proposedValues[column.columnName];
+                }
+                return this._values[column.columnName];
+            }
+            if (this._inEdit && this._proposedValues && Object.prototype.hasOwnProperty.call(this._proposedValues, column.columnName)) {
+                return this._proposedValues[column.columnName];
+            }
             return this._values[column.columnName];
         }
 
@@ -382,26 +505,37 @@ class DataRow {
         evaluationStack.add(columnName);
 
         try {
-            const proxy = this._createExpressionProxy(evaluationStack);
-            return column.expression(proxy, this, this._table);
+            const proxy = this._createExpressionProxy(evaluationStack, rowVersion);
+            return column._expressionEvaluator(proxy, this, this._table, rowVersion);
         } finally {
             evaluationStack.delete(columnName);
         }
     }
 
-    _createExpressionProxy(evaluationStack) {
+    _createExpressionProxy(evaluationStack, rowVersion) {
         return new Proxy(this, {
             get: (target, prop) => {
                 if (prop in target) {
                     return target[prop];
                 }
                 if (typeof prop === 'string' && target._table && target._table.columnExists(prop)) {
-                    return target._getByName(prop, evaluationStack);
+                    return target._getByName(prop, rowVersion, evaluationStack);
                 }
                 return undefined;
             }
         });
     }
+}
+
+function normalizeRowVersion(value, fallback = undefined) {
+    if (value === null || value === undefined || value === '') {
+        return fallback;
+    }
+    const text = String(value).toLowerCase();
+    if (text === 'current') return 'current';
+    if (text === 'original') return 'original';
+    if (text === 'proposed') return 'proposed';
+    return fallback;
 }
 
 module.exports = DataRow;

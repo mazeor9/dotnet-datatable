@@ -27,6 +27,11 @@ class DataTable {
         this.rows = new DataRowCollection(this);
         this.columns = new DataColumnCollection(this);
         this._caseSensitive = false;
+        this._uniqueConstraints = [];
+        this._checkConstraints = [];
+        this._inLoad = 0;
+        this._dataSet = null;
+        this._events = new Map();
     }
 
     get caseSensitive() {
@@ -46,6 +51,128 @@ class DataTable {
         }
     }
 
+    beginLoadData() {
+        this._inLoad++;
+        return this;
+    }
+
+    endLoadData() {
+        this._inLoad = Math.max(0, this._inLoad - 1);
+        if (this._inLoad === 0) {
+            if (this.rows && typeof this.rows._rebuildIndexes === 'function') {
+                this.rows._rebuildIndexes();
+            }
+        }
+        return this;
+    }
+
+    _shouldEnforceConstraints() {
+        if (this._inLoad > 0) {
+            return false;
+        }
+        if (this._dataSet && this._dataSet.enforceConstraints === false) {
+            return false;
+        }
+        return true;
+    }
+
+    on(eventName, handler) {
+        const name = String(eventName);
+        if (typeof handler !== 'function') {
+            return this;
+        }
+        if (!this._events.has(name)) {
+            this._events.set(name, new Set());
+        }
+        this._events.get(name).add(handler);
+        return this;
+    }
+
+    off(eventName, handler) {
+        const name = String(eventName);
+        const set = this._events.get(name);
+        if (!set) {
+            return this;
+        }
+        set.delete(handler);
+        if (set.size === 0) {
+            this._events.delete(name);
+        }
+        return this;
+    }
+
+    _emit(eventName, payload) {
+        if (this._inLoad > 0) {
+            return;
+        }
+        const name = String(eventName);
+        const set = this._events.get(name);
+        if (!set || set.size === 0) {
+            return;
+        }
+        for (const handler of [...set]) {
+            handler(payload);
+        }
+    }
+
+    addUniqueConstraint(columns, name = undefined) {
+        const cols = Array.isArray(columns) ? columns : [columns];
+        if (cols.length === 0) {
+            throw new SchemaMismatchError('UniqueConstraint requires at least one column.');
+        }
+        const resolved = cols.map((col) => this.columns.get(col).columnName);
+        const constraintName = name || `UQ_${this.tableName}_${resolved.join('_')}`;
+        if (this._uniqueConstraints.some((c) => c.name === constraintName)) {
+            throw new SchemaMismatchError(`UniqueConstraint '${constraintName}' already exists.`);
+        }
+        const constraint = { name: constraintName, columns: resolved };
+        this._uniqueConstraints.push(constraint);
+        if (this.rows && typeof this.rows._rebuildIndexes === 'function') {
+            this.rows._rebuildIndexes();
+        }
+        return constraint;
+    }
+
+    getUniqueConstraints() {
+        return [...this._uniqueConstraints];
+    }
+
+    addCheckConstraint(predicate, name = undefined) {
+        if (typeof predicate !== 'function') {
+            throw new SchemaMismatchError('CheckConstraint predicate must be a function.');
+        }
+        const constraintName = name || `CK_${this.tableName}_${this._checkConstraints.length + 1}`;
+        if (this._checkConstraints.some((c) => c.name === constraintName)) {
+            throw new SchemaMismatchError(`CheckConstraint '${constraintName}' already exists.`);
+        }
+        const constraint = { name: constraintName, predicate };
+        this._checkConstraints.push(constraint);
+        if (this.rows && typeof this.rows._rebuildIndexes === 'function') {
+            this.rows._rebuildIndexes();
+        }
+        return constraint;
+    }
+
+    getCheckConstraints() {
+        return [...this._checkConstraints];
+    }
+
+    _evaluateCheckConstraints(row, values) {
+        const constraints = this._checkConstraints || [];
+        if (constraints.length === 0) {
+            return;
+        }
+        const proxy = createRowProxyForValues(this, row, values);
+        for (const constraint of constraints) {
+            const ok = Boolean(constraint.predicate(proxy, row, this));
+            if (!ok) {
+                throw new ConstraintViolationError(
+                    `Constraint violation: check constraint '${constraint.name}' failed`
+                );
+            }
+        }
+    }
+
     /**
      * @param {string} columnName - Name of the column to add
      * @param {string|null} [dataType=null] - Data type of the column
@@ -56,12 +183,6 @@ class DataTable {
         const column = this.columns.add(columnName, dataType, options);
         if (options && typeof options === 'object') {
             if (options.caption !== undefined) column.caption = options.caption;
-            if (options.expression !== undefined) {
-                column.expression = options.expression;
-                if (typeof column.expression === 'function') {
-                    column.readOnly = true;
-                }
-            }
         }
         return column;
     }
@@ -96,12 +217,17 @@ class DataTable {
     static fromObjects(objects, options = {}) {
         const table = new DataTable(options.tableName || options.name || '');
         const DataTableLoader = require('./mapping/DataTableLoader');
-        DataTableLoader.load(table, objects, {
-            ...options,
-            clearBeforeLoad: false,
-            rowState: options.rowState || DataRowState.UNCHANGED,
-            preserveOriginalValues: options.preserveOriginalValues !== false
-        });
+        table.beginLoadData();
+        try {
+            DataTableLoader.load(table, objects, {
+                ...options,
+                clearBeforeLoad: false,
+                rowState: options.rowState || DataRowState.UNCHANGED,
+                preserveOriginalValues: options.preserveOriginalValues !== false
+            });
+        } finally {
+            table.endLoadData();
+        }
         return table;
     }
 
@@ -131,12 +257,205 @@ class DataTable {
         this.rows.removeAt(index);
     }
 
+    deleteRow(index) {
+        const row = this.rows[index];
+        if (row) {
+            row.delete();
+        }
+    }
+
     /**
      * @param {Function} filterExpression - Filter function to select rows
      * @returns {Array} Array of filtered rows
      */
     select(filterExpression) {
+        if (filterExpression === null || filterExpression === undefined || typeof filterExpression === 'string') {
+            return this.selectRows(filterExpression, arguments[1]);
+        }
         return this.rows._rows.filter(row => filterExpression(row._values)).map(row => row._values);
+    }
+
+    selectRows(filterExpression = null, sortExpression = null, rowStateFilter = null) {
+        const view = this.createView({
+            filter: filterExpression || undefined,
+            sort: sortExpression || undefined
+        });
+        let rows = view.getRows();
+        if (rowStateFilter) {
+            const normalized = normalizeRowState(rowStateFilter, null);
+            rows = rows.filter((row) => row.getRowState() === normalized);
+        }
+        return rows;
+    }
+
+    compute(aggregateExpression, filterExpression = null) {
+        const parsed = parseAggregateExpression(aggregateExpression);
+        const rows = this.selectRows(filterExpression, null)
+            .filter((row) => row.getRowState() !== DataRowState.DELETED);
+
+        if (parsed.fn === 'COUNT' && parsed.arg === '*') {
+            return rows.length;
+        }
+
+        const values = rows
+            .map((row) => row.get(parsed.arg))
+            .filter((value) => value !== null && value !== undefined);
+
+        if (parsed.fn === 'COUNT') {
+            return values.length;
+        }
+        if (values.length === 0) {
+            return null;
+        }
+
+        if (parsed.fn === 'MIN') {
+            return values.reduce((min, v) => compareScalars(v, min) < 0 ? v : min, values[0]);
+        }
+        if (parsed.fn === 'MAX') {
+            return values.reduce((max, v) => compareScalars(v, max) > 0 ? v : max, values[0]);
+        }
+        if (parsed.fn === 'SUM') {
+            return values.reduce((sum, v) => sum + Number(v), 0);
+        }
+        if (parsed.fn === 'AVG') {
+            return values.reduce((sum, v) => sum + Number(v), 0) / values.length;
+        }
+
+        throw new SchemaMismatchError(`Unsupported aggregate function '${parsed.fn}'`);
+    }
+
+    join(otherTable, options = {}) {
+        if (!(otherTable instanceof DataTable)) {
+            throw new SchemaMismatchError('join() requires a DataTable.');
+        }
+        const type = String(options.type || 'inner').toLowerCase();
+        const leftKey = options.leftKey || options.on;
+        const rightKey = options.rightKey || options.on;
+        if (!leftKey || !rightKey) {
+            throw new SchemaMismatchError('join() requires leftKey/rightKey (or on).');
+        }
+        const leftSelector = typeof leftKey === 'function' ? leftKey : (row) => row.get(leftKey);
+        const rightSelector = typeof rightKey === 'function' ? rightKey : (row) => row.get(rightKey);
+        const select = typeof options.select === 'function'
+            ? options.select
+            : (l, r) => ({ ...l.toObject(), ...(r ? r.toObject() : {}) });
+
+        const index = new Map();
+        for (const r of otherTable.rows._rows) {
+            if (r.getRowState() === DataRowState.DELETED) continue;
+            const key = serializeJoinKey(rightSelector(r));
+            if (!index.has(key)) index.set(key, []);
+            index.get(key).push(r);
+        }
+
+        const output = [];
+        for (const l of this.rows._rows) {
+            if (l.getRowState() === DataRowState.DELETED) continue;
+            const key = serializeJoinKey(leftSelector(l));
+            const matches = index.get(key) || [];
+            if (matches.length === 0) {
+                if (type === 'left') {
+                    output.push(select(l, null));
+                }
+                continue;
+            }
+            for (const r of matches) {
+                output.push(select(l, r));
+            }
+        }
+
+        return DataTable.fromObjects(output, {
+            tableName: options.tableName || `${this.tableName}_join_${otherTable.tableName}`,
+            primaryKey: options.primaryKey,
+            caseSensitive: options.caseSensitive ?? this.caseSensitive
+        });
+    }
+
+    groupBy(keys, aggregations = {}) {
+        const keyCols = Array.isArray(keys) ? keys : [keys];
+        const groups = new Map();
+
+        for (const row of this.rows._rows) {
+            if (row.getRowState() === DataRowState.DELETED) continue;
+            const keyValues = keyCols.map((k) => (typeof k === 'function' ? k(row) : row.get(k)));
+            const key = JSON.stringify(keyValues.map(serializeJoinKey));
+            if (!groups.has(key)) {
+                const base = {};
+                for (let i = 0; i < keyCols.length; i++) {
+                    const name = typeof keyCols[i] === 'string' ? keyCols[i] : `key${i + 1}`;
+                    base[name] = keyValues[i];
+                }
+                groups.set(key, { base, rows: [] });
+            }
+            groups.get(key).rows.push(row);
+        }
+
+        const result = [];
+        for (const group of groups.values()) {
+            const out = { ...group.base };
+            for (const [outName, def] of Object.entries(aggregations)) {
+                const fn = String(def.fn || def.function || def.aggregate || 'count').toUpperCase();
+                const col = def.column || def.arg || '*';
+                if (fn === 'COUNT' && col === '*') {
+                    out[outName] = group.rows.length;
+                    continue;
+                }
+                const vals = group.rows.map((r) => r.get(col)).filter((v) => v !== null && v !== undefined);
+                if (fn === 'COUNT') out[outName] = vals.length;
+                else if (fn === 'SUM') out[outName] = vals.reduce((s, v) => s + Number(v), 0);
+                else if (fn === 'AVG') out[outName] = vals.length ? vals.reduce((s, v) => s + Number(v), 0) / vals.length : null;
+                else if (fn === 'MIN') out[outName] = vals.length ? vals.reduce((m, v) => compareScalars(v, m) < 0 ? v : m, vals[0]) : null;
+                else if (fn === 'MAX') out[outName] = vals.length ? vals.reduce((m, v) => compareScalars(v, m) > 0 ? v : m, vals[0]) : null;
+                else throw new SchemaMismatchError(`Unsupported aggregate '${fn}' in groupBy()`);
+            }
+            result.push(out);
+        }
+        return result;
+    }
+
+    distinct(columns) {
+        const cols = Array.isArray(columns) ? columns : [columns];
+        const seen = new Set();
+        const output = [];
+        for (const row of this.rows._rows) {
+            if (row.getRowState() === DataRowState.DELETED) continue;
+            const keyValues = cols.map((c) => row.get(c));
+            const key = JSON.stringify(keyValues.map(serializeJoinKey));
+            if (seen.has(key)) continue;
+            seen.add(key);
+            output.push(row.toObject());
+        }
+        return DataTable.fromObjects(output, {
+            tableName: `${this.tableName}_distinct`,
+            primaryKey: this.getPrimaryKey(),
+            caseSensitive: this.caseSensitive
+        });
+    }
+
+    union(otherTable, options = {}) {
+        if (!(otherTable instanceof DataTable)) {
+            throw new SchemaMismatchError('union() requires a DataTable.');
+        }
+        const columns = this.columns.toArray().map((c) => c.columnName);
+        for (const col of columns) {
+            if (!otherTable.columnExists(col)) {
+                throw new SchemaMismatchError(`union() schema mismatch: missing column '${col}'`);
+            }
+        }
+        const all = [];
+        for (const row of this.rows._rows) {
+            if (row.getRowState() === DataRowState.DELETED) continue;
+            all.push(row.toObject());
+        }
+        for (const row of otherTable.rows._rows) {
+            if (row.getRowState() === DataRowState.DELETED) continue;
+            all.push(row.toObject());
+        }
+        return DataTable.fromObjects(all, {
+            tableName: options.tableName || `${this.tableName}_union_${otherTable.tableName}`,
+            primaryKey: options.primaryKey || this.getPrimaryKey(),
+            caseSensitive: options.caseSensitive ?? this.caseSensitive
+        });
     }
 
     /**
@@ -259,7 +578,7 @@ class DataTable {
         for (const row of this.rows) {
             const newRow = newTable.newRow();
             for (const col of this.columns) {
-                if (typeof col.expression === 'function') {
+                if (col.isComputed) {
                     continue;
                 }
                 newRow.set(col.columnName, row.get(col.columnName));
@@ -350,7 +669,12 @@ class DataTable {
 
     loadRows(rows, options = {}) {
         const DataTableLoader = require('./mapping/DataTableLoader');
-        return DataTableLoader.load(this, rows, options);
+        this.beginLoadData();
+        try {
+            return DataTableLoader.load(this, rows, options);
+        } finally {
+            this.endLoadData();
+        }
     }
 
     mergeRows(rows, options = {}) {
@@ -479,7 +803,7 @@ class DataTable {
                 dataType: column.dataType,
                 allowNull: column.allowNull,
                 defaultValue: column.defaultValue,
-                expression: column.expression,
+                expression: typeof column.expression === 'string' ? column.expression : null,
                 readOnly: column.readOnly,
                 unique: column.unique,
                 ordinal: column.ordinal,
@@ -505,6 +829,16 @@ class DataTable {
                     name: `UQ_${this.tableName}_${column.columnName}`
                 });
             }
+        }
+
+        for (const constraint of this._uniqueConstraints || []) {
+            if (!constraint || !Array.isArray(constraint.columns) || constraint.columns.length < 2) {
+                continue;
+            }
+            schema.uniqueConstraints.push({
+                columns: [...constraint.columns],
+                name: constraint.name
+            });
         }
 
         return schema;
@@ -537,6 +871,15 @@ class DataTable {
         }
         if (schema.primaryKey && schema.primaryKey.length > 0) {
             table.setPrimaryKey(schema.primaryKey);
+        }
+
+        if (Array.isArray(schema.uniqueConstraints)) {
+            for (const constraint of schema.uniqueConstraints) {
+                const cols = constraint && Array.isArray(constraint.columns) ? constraint.columns : [];
+                if (cols.length > 1) {
+                    table.addUniqueConstraint(cols, constraint.name);
+                }
+            }
         }
 
         return table;
@@ -1109,6 +1452,48 @@ class DataTable {
         };
     }
 
+    serialize(options = {}) {
+        const payload = {
+            schema: this.exportSchema(),
+            rows: this.rows._rows.map((row) => ({
+                rowState: row.getRowState(),
+                values: cloneValues(row._values),
+                originalValues: cloneValues(row._originalValues),
+                proposedValues: row._proposedValues ? cloneValues(row._proposedValues) : null
+            }))
+        };
+        return options.asObject === true ? payload : JSON.stringify(payload);
+    }
+
+    static deserialize(input) {
+        const payload = typeof input === 'string' ? JSON.parse(input) : input;
+        if (!payload || typeof payload !== 'object' || !payload.schema) {
+            throw new SchemaMismatchError('Invalid DataTable serialized payload.');
+        }
+        const table = DataTable.importSchema(payload.schema);
+        table.beginLoadData();
+        try {
+            const rows = Array.isArray(payload.rows) ? payload.rows : [];
+            for (const item of rows) {
+                const row = table.newRow();
+                row._values = cloneValues(item.values || {});
+                row._originalValues = cloneValues(item.originalValues || item.values || {});
+                row._proposedValues = item.proposedValues ? cloneValues(item.proposedValues) : null;
+                row._inEdit = Boolean(row._proposedValues);
+                row._table = table;
+                row._rowState = item.rowState || DataRowState.UNCHANGED;
+
+                table.rows._rows.push(row);
+                if (row._rowState !== DataRowState.DELETED && row._rowState !== DataRowState.DETACHED) {
+                    table.rows._indexRow(row);
+                }
+            }
+        } finally {
+            table.endLoadData();
+        }
+        return table;
+    }
+
     [NodeInspectFormatter.customInspectSymbol](depth, options, inspect) {
         return NodeInspectFormatter.inspectDataTable(this, depth, options, inspect);
     }
@@ -1162,6 +1547,32 @@ class DataTable {
     getChangeSet(options = {}) {
         const { DataTableChangeSet } = require('./changeTracking');
         return DataTableChangeSet.fromTable(this, options);
+    }
+
+    getCommands(options = {}) {
+        const changeSet = this.getChangeSet(options);
+        return {
+            tableName: this.tableName,
+            primaryKey: [...changeSet.primaryKey],
+            inserts: changeSet.added.map((c) => ({
+                tableName: c.tableName,
+                key: c.key,
+                values: c.values
+            })),
+            updates: changeSet.modified.map((c) => ({
+                tableName: c.tableName,
+                key: c.key,
+                originalKey: c.originalKey,
+                values: c.values,
+                originalValues: c.originalValues,
+                changedColumns: c.changedColumns
+            })),
+            deletes: changeSet.deleted.map((c) => ({
+                tableName: c.tableName,
+                key: c.key,
+                originalValues: c.originalValues
+            }))
+        };
     }
 
     applyChangeSet(changeSet, options = {}) {
@@ -1491,11 +1902,68 @@ function applyValuesToRow(table, row, values, options) {
             continue;
         }
         const column = table.columns.get(sourceName);
-        if (typeof column.expression === 'function') {
+        if (column.isComputed) {
             continue;
         }
         row.set(column.columnName, value);
     }
+}
+
+function parseAggregateExpression(expression) {
+    const match = String(expression || '').trim().match(/^([A-Za-z_][\w]*)\s*\(\s*(\*|[A-Za-z_][\w.]*)\s*\)$/);
+    if (!match) {
+        throw new SchemaMismatchError(`Invalid aggregate expression '${expression}'`);
+    }
+    return {
+        fn: match[1].toUpperCase(),
+        arg: match[2]
+    };
+}
+
+function compareScalars(a, b) {
+    if (a === b) return 0;
+    if (a === null || a === undefined) return 1;
+    if (b === null || b === undefined) return -1;
+    if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime();
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    return String(a).localeCompare(String(b));
+}
+
+function serializeJoinKey(value) {
+    if (value === null || value === undefined) return null;
+    if (value instanceof Date) return `d:${value.getTime()}`;
+    if (typeof value === 'bigint') return `bi:${value.toString()}`;
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer(value)) return `buf:${value.toString('base64')}`;
+    if (typeof value === 'number') return `n:${Object.is(value, -0) ? '-0' : String(value)}`;
+    if (typeof value === 'boolean') return `b:${value ? '1' : '0'}`;
+    if (typeof value === 'string') return `s:${value}`;
+    try {
+        return `j:${JSON.stringify(value)}`;
+    } catch (_) {
+        return `u:${String(value)}`;
+    }
+}
+
+function createRowProxyForValues(table, row, values) {
+    const resolvedValues = values && typeof values === 'object' ? values : {};
+    return new Proxy(row, {
+        get(target, prop) {
+            if (prop in target) {
+                return target[prop];
+            }
+            if (typeof prop === 'string' && table && table.columnExists(prop)) {
+                const canonical = table.columns.get(prop).columnName;
+                if (Object.prototype.hasOwnProperty.call(resolvedValues, canonical)) {
+                    return resolvedValues[canonical];
+                }
+                if (Object.prototype.hasOwnProperty.call(resolvedValues, prop)) {
+                    return resolvedValues[prop];
+                }
+                return target.get(canonical, 'current');
+            }
+            return undefined;
+        }
+    });
 }
 
 function mapOutputColumnName(columnName, mapping) {

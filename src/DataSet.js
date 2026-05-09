@@ -1,13 +1,16 @@
 const DataTable = require('./DataTable');
 const DataRelation = require('./DataRelation');
 const { DebugSchemaSerializer, DebugTableSerializer, NodeInspectFormatter } = require('./debug');
-const { SchemaMismatchError } = require('./errors');
+const { ConstraintViolationError, SchemaMismatchError } = require('./errors');
 
 class DataSet {
     constructor(dataSetName = '') {
         this.dataSetName = dataSetName;
         this.tables = new Map();
         this.relations = [];
+        this.enforceConstraints = true;
+        this._foreignKeyConstraints = [];
+        this._inConstraintAction = false;
     }
 
     static fromRecordsets(recordsets, options = {}) {
@@ -37,6 +40,7 @@ class DataSet {
             throw new Error(`Table '${table.tableName}' already exists in the DataSet`);
         }
         
+        table._dataSet = this;
         this.tables.set(table.tableName, table);
         return table;
     }
@@ -55,6 +59,10 @@ class DataSet {
             rel.childTable.tableName !== tableName
         );
         
+        const table = this.tables.get(tableName);
+        if (table) {
+            table._dataSet = null;
+        }
         this.tables.delete(tableName);
     }
 
@@ -106,6 +114,157 @@ class DataSet {
         this.relations.push(relation);
         
         return relation;
+    }
+
+    addForeignKeyConstraint(relationName, options = {}) {
+        const relation = this.getRelation(relationName);
+        const deleteRule = normalizeFkRule(options.deleteRule || options.onDelete || 'restrict');
+        const updateRule = normalizeFkRule(options.updateRule || options.onUpdate || 'restrict');
+        const name = options.name || `FK_${relation.parentTable.tableName}_${relation.childTable.tableName}_${relationName}`;
+
+        if (this._foreignKeyConstraints.some((c) => c.name === name)) {
+            throw new SchemaMismatchError(`ForeignKeyConstraint '${name}' already exists.`);
+        }
+
+        const constraint = {
+            name,
+            relationName,
+            relation,
+            deleteRule,
+            updateRule
+        };
+        this._foreignKeyConstraints.push(constraint);
+        return constraint;
+    }
+
+    getForeignKeyConstraints() {
+        return [...this._foreignKeyConstraints];
+    }
+
+    _evaluateForeignKeyConstraints(row, values) {
+        if (this.enforceConstraints !== true || this._inConstraintAction === true) {
+            return;
+        }
+        const constraints = this._foreignKeyConstraints || [];
+        if (constraints.length === 0) {
+            return;
+        }
+        const table = row?._table;
+        for (const constraint of constraints) {
+            const rel = constraint.relation;
+            if (!rel || rel.childTable !== table) {
+                continue;
+            }
+            const childColumnName = rel.childColumn.columnName;
+            const parentColumnName = rel.parentColumn.columnName;
+            const fkValue = values && Object.prototype.hasOwnProperty.call(values, childColumnName)
+                ? values[childColumnName]
+                : row.get(childColumnName, 'current');
+
+            if (fkValue === null || fkValue === undefined) {
+                continue;
+            }
+
+            const parentTable = rel.parentTable;
+            const parentPk = typeof parentTable.getPrimaryKey === 'function' ? parentTable.getPrimaryKey() : [];
+            let parentRow = null;
+            if (parentPk.length === 1 && parentPk[0] === parentColumnName) {
+                parentRow = parentTable.find(fkValue);
+            } else {
+                parentRow = parentTable.findOne({ [parentColumnName]: fkValue });
+            }
+            if (!parentRow || parentRow.getRowState?.() === 'DELETED') {
+                throw new ConstraintViolationError(
+                    `Constraint violation: foreign key '${constraint.name}' has no parent row (${parentTable.tableName}.${parentColumnName}=${fkValue})`
+                );
+            }
+        }
+    }
+
+    _onRowDeleting(row) {
+        if (this.enforceConstraints !== true || this._inConstraintAction === true) {
+            return;
+        }
+        const table = row?._table;
+        const constraints = this._foreignKeyConstraints || [];
+        for (const constraint of constraints) {
+            const rel = constraint.relation;
+            if (!rel || rel.parentTable !== table) {
+                continue;
+            }
+            const parentValue = row.get(rel.parentColumn.columnName, 'current');
+            const children = rel.getChildRows(row)
+                .filter((child) => child.getRowState?.() !== 'DELETED');
+            if (children.length === 0) {
+                continue;
+            }
+            if (constraint.deleteRule === 'restrict') {
+                throw new ConstraintViolationError(
+                    `Constraint violation: cannot delete parent row due to foreign key '${constraint.name}'`
+                );
+            }
+            this._inConstraintAction = true;
+            try {
+                if (constraint.deleteRule === 'cascade') {
+                    for (const child of children) {
+                        child.delete();
+                    }
+                } else if (constraint.deleteRule === 'setnull') {
+                    for (const child of children) {
+                        child.set(rel.childColumn.columnName, null);
+                    }
+                }
+            } finally {
+                this._inConstraintAction = false;
+            }
+        }
+    }
+
+    _onRowValueChange(row, columnName, oldValue, newValue) {
+        if (this.enforceConstraints !== true || this._inConstraintAction === true) {
+            return;
+        }
+        const table = row?._table;
+        const constraints = this._foreignKeyConstraints || [];
+        for (const constraint of constraints) {
+            const rel = constraint.relation;
+            if (!rel) continue;
+
+            if (rel.childTable === table && rel.childColumn.columnName === columnName) {
+                this._evaluateForeignKeyConstraints(row, { ...row._values, [columnName]: newValue });
+                continue;
+            }
+
+            if (rel.parentTable === table && rel.parentColumn.columnName === columnName) {
+                if (oldValue === newValue) {
+                    continue;
+                }
+                const children = rel.getChildRows(row)
+                    .filter((child) => child.getRowState?.() !== 'DELETED');
+                if (children.length === 0) {
+                    continue;
+                }
+                if (constraint.updateRule === 'restrict') {
+                    throw new ConstraintViolationError(
+                        `Constraint violation: cannot update parent key due to foreign key '${constraint.name}'`
+                    );
+                }
+                this._inConstraintAction = true;
+                try {
+                    if (constraint.updateRule === 'cascade') {
+                        for (const child of children) {
+                            child.set(rel.childColumn.columnName, newValue);
+                        }
+                    } else if (constraint.updateRule === 'setnull') {
+                        for (const child of children) {
+                            child.set(rel.childColumn.columnName, null);
+                        }
+                    }
+                } finally {
+                    this._inConstraintAction = false;
+                }
+            }
+        }
     }
 
     /**
@@ -178,6 +337,19 @@ class DataSet {
     getChangeSet(options = {}) {
         const { DataSetChangeSet } = require('./changeTracking');
         return DataSetChangeSet.fromDataSet(this, options);
+    }
+
+    getCommands(options = {}) {
+        const commands = [];
+        for (const table of this.tables.values()) {
+            if (typeof table.getCommands === 'function') {
+                commands.push(table.getCommands(options));
+            }
+        }
+        return {
+            dataSetName: this.dataSetName,
+            tables: commands
+        };
     }
 
     applyChangeSet(changeSet, options = {}) {
@@ -347,6 +519,72 @@ class DataSet {
         };
     }
 
+    serialize(options = {}) {
+        const payload = {
+            dataSetName: this.dataSetName,
+            enforceConstraints: this.enforceConstraints === true,
+            tables: Array.from(this.tables.values()).map((table) => ({
+                tableName: table.tableName,
+                payload: table.serialize({ asObject: true })
+            })),
+            relations: (this.relations || []).map((rel) => ({
+                relationName: rel.relationName,
+                parentTable: rel.parentTable.tableName,
+                parentColumn: rel.parentColumn.columnName,
+                childTable: rel.childTable.tableName,
+                childColumn: rel.childColumn.columnName
+            })),
+            foreignKeyConstraints: (this._foreignKeyConstraints || []).map((c) => ({
+                name: c.name,
+                relationName: c.relationName,
+                deleteRule: c.deleteRule,
+                updateRule: c.updateRule
+            }))
+        };
+        return options.asObject === true ? payload : JSON.stringify(payload);
+    }
+
+    static deserialize(input) {
+        const payload = typeof input === 'string' ? JSON.parse(input) : input;
+        if (!payload || typeof payload !== 'object') {
+            throw new SchemaMismatchError('Invalid DataSet serialized payload.');
+        }
+        const ds = new DataSet(payload.dataSetName || '');
+        ds.enforceConstraints = payload.enforceConstraints !== false;
+
+        const tables = Array.isArray(payload.tables) ? payload.tables : [];
+        for (const item of tables) {
+            const tablePayload = item?.payload;
+            const table = DataTable.deserialize(tablePayload);
+            table.tableName = item.tableName || table.tableName;
+            ds.addTable(table);
+        }
+
+        const relations = Array.isArray(payload.relations) ? payload.relations : [];
+        for (const rel of relations) {
+            if (!rel) continue;
+            ds.addRelation(
+                rel.relationName,
+                rel.parentTable,
+                rel.childTable,
+                rel.parentColumn,
+                rel.childColumn
+            );
+        }
+
+        const fks = Array.isArray(payload.foreignKeyConstraints) ? payload.foreignKeyConstraints : [];
+        for (const fk of fks) {
+            if (!fk) continue;
+            ds.addForeignKeyConstraint(fk.relationName, {
+                name: fk.name,
+                deleteRule: fk.deleteRule,
+                updateRule: fk.updateRule
+            });
+        }
+
+        return ds;
+    }
+
     toDebugView(options = {}) {
         return DebugTableSerializer.dataSetToDebugView(this, options);
     }
@@ -418,6 +656,13 @@ function normalizeDataSetChangeSet(changeSet) {
         dataSetName: raw.dataSetName || '',
         tables: Array.isArray(raw.tables) ? raw.tables : []
     };
+}
+
+function normalizeFkRule(value) {
+    const rule = String(value || 'restrict').toLowerCase();
+    if (rule === 'cascade') return 'cascade';
+    if (rule === 'setnull' || rule === 'set_null' || rule === 'set null') return 'setnull';
+    return 'restrict';
 }
 
 module.exports = DataSet;

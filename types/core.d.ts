@@ -39,6 +39,7 @@ export type DataTypeName =
 
 export type SortDirection = 'asc' | 'desc';
 export type DataRowStateValue = 'DETACHED' | 'ADDED' | 'MODIFIED' | 'DELETED' | 'UNCHANGED';
+export type DataRowVersion = 'current' | 'original' | 'proposed';
 export type DataViewFilter<TRow extends object = DataRecord> =
   | string
   | Partial<Record<keyof TRow | string, unknown>>
@@ -50,7 +51,7 @@ export interface DataColumnOptions {
   primaryKey?: boolean;
   isPrimaryKey?: boolean;
   caption?: string;
-  expression?: unknown | ((row: any, dataRow?: DataRow<any>, table?: DataTable<any>) => unknown);
+  expression?: string | ((row: any, dataRow?: DataRow<any>, table?: DataTable<any>, version?: DataRowVersion) => unknown);
   readOnly?: boolean;
   unique?: boolean;
   maxLength?: number | null;
@@ -264,7 +265,7 @@ export class DataColumn {
   allowNull: boolean;
   defaultValue: unknown;
   caption: string;
-  expression: unknown | ((row: any, dataRow?: DataRow<any>, table?: DataTable<any>) => unknown);
+  expression: unknown | ((row: any, dataRow?: DataRow<any>, table?: DataTable<any>, version?: DataRowVersion) => unknown);
   readOnly: boolean;
   unique: boolean;
   isPrimaryKey: boolean;
@@ -301,15 +302,18 @@ export class DataRow<TRow extends object = DataRecord> {
 
   item<K extends keyof TRow & string>(columnName: K): TRow[K];
   item(columnName: string): unknown;
-  get<K extends keyof TRow & string>(columnName: K): TRow[K];
-  get(index: number): unknown;
-  get(columnName: string): unknown;
+  get<K extends keyof TRow & string>(columnName: K, version?: DataRowVersion): TRow[K];
+  get(index: number, version?: DataRowVersion): unknown;
+  get(columnName: string, version?: DataRowVersion): unknown;
   set<K extends keyof TRow & string>(columnName: K, value: TRow[K]): void;
   set(columnName: string, value: unknown): void;
   toJSON(): TRow & DataRecord;
   toString(): string;
   acceptChanges(): void;
   rejectChanges(): void;
+  beginEdit(): this;
+  endEdit(): this;
+  cancelEdit(): this;
   hasChanges(): boolean;
   getRowState(): DataRowStateValue;
   delete(): void;
@@ -319,6 +323,7 @@ export class DataRow<TRow extends object = DataRecord> {
   readonly rowState: DataRowStateValue;
   readonly currentValues: TRow & DataRecord;
   readonly originalValues: Partial<TRow> & DataRecord;
+  readonly proposedValues: Partial<TRow> & DataRecord | null;
 }
 
 export interface DataRowCollection<TRow extends object = DataRecord> extends Iterable<DataRow<TRow>> {
@@ -357,7 +362,11 @@ export class DataTable<TRow extends object = DataRecord> implements Iterable<Dat
   static fromQueryResult<TRow extends object = DataRecord>(queryResult: unknown, options?: QueryResultMapOptions): DataTable<TRow>;
 
   removeRow(index: number): void;
+  deleteRow(index: number): void;
+  select(filterExpression?: string | null, sortExpression?: string | null): Array<DataRow<TRow>>;
   select(filterExpression: (values: TRow & DataRecord) => boolean): Array<TRow & DataRecord>;
+  selectRows(filterExpression?: DataViewFilter<TRow> | null, sortExpression?: string | null, rowStateFilter?: DataRowStateValue | string | null): Array<DataRow<TRow>>;
+  compute(aggregateExpression: string, filterExpression?: DataViewFilter<TRow> | null): unknown;
   sort(columnNameOrComparer: string | ((a: DataRow<TRow>, b: DataRow<TRow>) => number), order?: SortDirection): this;
   sortBy(expression: (row: DataRow<TRow>) => unknown): this;
   sortMultiple(...sortCriteria: Array<{ column: keyof TRow & string; order?: SortDirection } | { column: string; order?: SortDirection }>): this;
@@ -371,6 +380,12 @@ export class DataTable<TRow extends object = DataRecord> implements Iterable<Dat
   loadRows(rows: unknown[], options?: DataTableLoadOptions): this;
   mergeRows(rows: unknown[], options?: MergeRowsOptions): MergeRowsResult;
   exportSchema(): DataTableSchema;
+  beginLoadData(): this;
+  endLoadData(): this;
+  addUniqueConstraint(columns: string | string[], name?: string): { name: string; columns: string[] };
+  getUniqueConstraints(): Array<{ name: string; columns: string[] }>;
+  addCheckConstraint(predicate: (row: any, dataRow?: DataRow<TRow>, table?: DataTable<TRow>) => boolean, name?: string): { name: string };
+  getCheckConstraints(): Array<{ name: string }>;
   compareSchema(otherTable: DataTable): SchemaComparison;
   updateSchema(sourceTable: DataTable, addMissingColumns?: boolean, removeExtraColumns?: boolean): SchemaUpdateResult;
   merge(sourceTable: DataTable<TRow>, options?: DataTableMergeOptions): DataTableMergeResult;
@@ -393,6 +408,7 @@ export class DataTable<TRow extends object = DataRecord> implements Iterable<Dat
   rejectChanges(): void;
   getChanges(rowState?: DataRowStateValue | string | null): Array<DataRow<TRow>>;
   getChangeSet(options?: ChangeSetOptions): DataTableChangeSet;
+  getCommands(options?: ChangeSetOptions): unknown;
   applyChangeSet(changeSet: DataTableChangeSet | DataTableChangeSetObject | unknown, options?: ApplyChangeSetOptions): ApplyChangeSetResult;
   getRowsByState(state: DataRowStateValue | string): Array<DataRow<TRow>>;
   hasChanges(): boolean;
@@ -412,11 +428,19 @@ export class DataTable<TRow extends object = DataRecord> implements Iterable<Dat
   getPrimaryKey(): string[];
   find(key: unknown): DataRow<TRow> | null;
   findByPrimaryKey(key: unknown): DataRow<TRow> | null;
+  on(eventName: string, handler: (payload: unknown) => void): this;
+  off(eventName: string, handler: (payload: unknown) => void): this;
+  serialize(options?: { asObject?: boolean }): string | unknown;
+  join(otherTable: DataTable<any>, options?: unknown): DataTable<any>;
+  groupBy(keys: string | string[] | ((row: DataRow<TRow>) => unknown), aggregations?: unknown): unknown[];
+  distinct(columns: string | string[]): DataTable<any>;
+  union(otherTable: DataTable<any>, options?: unknown): DataTable<any>;
 
   [Symbol.iterator](): IterableIterator<DataRow<TRow>>;
 
   static importSchema<TRow extends object = DataRecord>(schema: DataTableSchema): DataTable<TRow>;
   static deserializeSchema<TRow extends object = DataRecord>(schemaJson: string): DataTable<TRow>;
+  static deserialize<TRow extends object = DataRecord>(input: unknown): DataTable<TRow>;
 }
 
 export class DataRelation {
@@ -472,6 +496,7 @@ export class DataSet {
   dataSetName: string;
   tables: Map<string, DataTable<any>>;
   relations: DataRelation[];
+  enforceConstraints: boolean;
 
   static fromRecordsets(recordsets: unknown[][], options?: DataSetLoadOptions): DataSet;
   static fromQueryResult(queryResult: unknown, options?: DataSetLoadOptions & QueryResultMapOptions): DataSet;
@@ -495,9 +520,14 @@ export class DataSet {
   getParentRow(childRow: DataRow, relationName: string): DataRow | null;
   clear(): void;
   getChangeSet(options?: ChangeSetOptions): DataSetChangeSet;
+  getCommands(options?: ChangeSetOptions): unknown;
   applyChangeSet(changeSet: DataSetChangeSet | DataSetChangeSetObject | unknown, options?: ApplyDataSetChangeSetOptions): ApplyDataSetChangeSetResult;
+  addForeignKeyConstraint(relationName: string, options?: { name?: string; deleteRule?: string; updateRule?: string }): unknown;
+  getForeignKeyConstraints(): unknown[];
   merge(source: DataSet | DataTable<any>, options?: DataTableMergeOptions): DataSetMergeResult;
   toJSON(): DataSetJson;
+  serialize(options?: { asObject?: boolean }): string | unknown;
+  static deserialize(input: unknown): DataSet;
   toDebugView(options?: DebugViewOptions): DataSetDebugView;
   getSchema(): DataSetSchemaDebugView;
   clone(): DataSet;

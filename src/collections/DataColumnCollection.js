@@ -84,6 +84,10 @@ class DataColumnCollection {
       this._table.rows._rebuildIndexes();
     }
 
+    if (this._table && typeof this._table._emit === 'function') {
+      this._table._emit('columnAdded', { column });
+    }
+
     return column;
   }
 
@@ -115,6 +119,10 @@ class DataColumnCollection {
 
     if (this._table?.rows && typeof this._table.rows._rebuildIndexes === "function") {
       this._table.rows._rebuildIndexes();
+    }
+
+    if (this._table && typeof this._table._emit === 'function') {
+      this._table._emit('columnRemoved', { column });
     }
   }
 
